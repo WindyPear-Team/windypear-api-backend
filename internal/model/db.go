@@ -32,8 +32,6 @@ func InitDB() {
 		&OIDCBindRequest{},
 		&WebAuthnChallenge{},
 		&PasskeyCredential{},
-		&RedeemCode{},
-		&RedeemCodeRedemption{},
 		&CheckInRecord{},
 		&PaymentOrder{},
 		&Group{},

@@ -45,35 +45,6 @@ type APIKey struct {
 	UpdatedAt           time.Time  `json:"updated_at"`
 }
 
-// RedeemCode adds balance to a user account when redeemed.
-type RedeemCode struct {
-	ID                uint                   `gorm:"primaryKey" json:"id"`
-	Code              string                 `gorm:"uniqueIndex;size:64;not null" json:"code"`
-	Amount            decimal.Decimal        `gorm:"type:decimal(20,6);not null" json:"amount"`
-	GroupID           *uint                  `gorm:"index" json:"group_id"`
-	Group             Group                  `gorm:"foreignKey:GroupID" json:"group,omitempty"`
-	GroupDurationDays int                    `gorm:"default:0" json:"group_duration_days"`
-	AllowStacking     bool                   `gorm:"default:false" json:"allow_stacking"`
-	MaxUses           int                    `gorm:"default:1" json:"max_uses"`
-	UsedCount         int                    `gorm:"default:0" json:"used_count"`
-	Enabled           bool                   `gorm:"default:true" json:"enabled"`
-	ExpiresAt         *time.Time             `json:"expires_at"`
-	CreatedAt         time.Time              `json:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
-	Redemptions       []RedeemCodeRedemption `gorm:"foreignKey:RedeemCodeID" json:"-"`
-}
-
-// RedeemCodeRedemption records a user's redemption of a code.
-type RedeemCodeRedemption struct {
-	ID           uint            `gorm:"primaryKey" json:"id"`
-	RedeemCodeID uint            `gorm:"uniqueIndex:idx_redeem_code_user;not null" json:"redeem_code_id"`
-	RedeemCode   RedeemCode      `gorm:"foreignKey:RedeemCodeID" json:"-"`
-	UserID       uint            `gorm:"uniqueIndex:idx_redeem_code_user;not null" json:"user_id"`
-	User         User            `gorm:"foreignKey:UserID" json:"-"`
-	Amount       decimal.Decimal `gorm:"type:decimal(20,6);not null" json:"amount"`
-	CreatedAt    time.Time       `json:"created_at"`
-}
-
 // CheckInRecord records a user's daily check-in reward.
 type CheckInRecord struct {
 	ID           uint            `gorm:"primaryKey" json:"id"`

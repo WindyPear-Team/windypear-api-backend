@@ -27,6 +27,9 @@ func Run() error {
 
 	// Initialize database
 	model.InitDB()
+	if err := service.RunStartupHooks(); err != nil {
+		return err
+	}
 
 	// Services
 	authService, err := service.NewAuthService()
@@ -58,7 +61,6 @@ func Run() error {
 	statsAPI := &api.StatsAPI{}
 	groupAPI := &api.GroupAPI{}
 	systemAPI := &api.SystemAPI{}
-	redeemCodeAPI := &api.RedeemCodeAPI{}
 	referralAPI := &api.ReferralAPI{}
 	statusMonitorAPI := &api.StatusMonitorAPI{StatusService: statusService}
 	checkInAPI := &api.CheckInAPI{}
@@ -336,16 +338,13 @@ func Run() error {
 		admin.GET("/users", userAPI.List)
 		admin.PUT("/users/:id", userAPI.Update)
 		admin.DELETE("/users/:id", userAPI.Delete)
-		admin.GET("/redeem-codes", redeemCodeAPI.List)
-		admin.POST("/redeem-codes", redeemCodeAPI.Create)
-		admin.PUT("/redeem-codes/:id", redeemCodeAPI.Update)
-		admin.DELETE("/redeem-codes/:id", redeemCodeAPI.Delete)
 		admin.GET("/referral-commissions", referralAPI.ListCommissions)
 
 		// Stats
 		admin.GET("/logs", statsAPI.GetLogs)
 		admin.GET("/stats", statsAPI.GetDashboardStats)
 		admin.GET("/channel-usage", statsAPI.GetChannelUsage)
+		service.ApplyAdminRouteHooks(admin)
 	}
 
 	// User Self APIs
@@ -356,7 +355,6 @@ func Run() error {
 		userGroup.GET("/catalog", userChannelAPI.Catalog)
 		userGroup.GET("/stats", statsAPI.GetUserDashboardStats)
 		userGroup.GET("/logs", statsAPI.GetUserLogs)
-		userGroup.POST("/redeem-code", redeemCodeAPI.Redeem)
 		userGroup.GET("/referral", referralAPI.GetMine)
 		userGroup.GET("/check-in/status", checkInAPI.Status)
 		userGroup.POST("/check-in", checkInAPI.Claim)
@@ -399,6 +397,7 @@ func Run() error {
 		userGroup.PUT("/api-keys/:id", userAPI.UpdateAPIKey)
 		userGroup.DELETE("/api-keys/:id", userAPI.DeleteAPIKey)
 		userGroup.POST("/api-key/rotate", userAPI.RotateAPIKey)
+		service.ApplyUserRouteHooks(userGroup)
 	}
 
 	// Serve embedded frontend assets from web/dist.

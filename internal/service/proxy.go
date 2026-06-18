@@ -615,16 +615,12 @@ func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model
 		return http.StatusInternalServerError, "Failed to start transaction", tx.Error
 	}
 
-	balanceUpdate := tx.Model(&model.User{}).
-		Where("id = ? AND balance >= ?", user.ID, cost).
-		UpdateColumn("balance", gorm.Expr("balance - ?", cost))
-	if balanceUpdate.Error != nil {
+	if err := ApplyUsageCharge(tx, user.ID, cost); err != nil {
 		tx.Rollback()
-		return http.StatusInternalServerError, "Failed to update balance", balanceUpdate.Error
-	}
-	if balanceUpdate.RowsAffected == 0 {
-		tx.Rollback()
-		return http.StatusPaymentRequired, "Insufficient balance", fmt.Errorf("insufficient balance")
+		if errors.Is(err, ErrInsufficientBalance) {
+			return http.StatusPaymentRequired, "Insufficient balance", err
+		}
+		return http.StatusInternalServerError, "Failed to update balance", err
 	}
 
 	tokenLog := model.TokenLog{
