@@ -78,6 +78,10 @@ func Run() error {
 	r.GET("/api/payment/yipay/return", paymentAPI.Return)
 	r.GET("/api/payment/yipay/notify", paymentAPI.Notify)
 	r.POST("/api/payment/yipay/notify", paymentAPI.Notify)
+	r.GET("/api/payment/openpayment/return", paymentAPI.Return)
+	r.GET("/api/payment/openpayment/notify", paymentAPI.Notify)
+	r.POST("/api/payment/openpayment/notify", paymentAPI.Notify)
+	r.GET("/api/payment/openpayment/submit/:order_no", paymentAPI.OpenPaymentSubmit)
 	r.GET("/api/setup/status", func(c *gin.Context) {
 		required, err := authService.InitialSetupRequired()
 		if err != nil {

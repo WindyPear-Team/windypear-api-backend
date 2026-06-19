@@ -23,22 +23,32 @@ import (
 const (
 	paymentStatusPending = "pending"
 	paymentStatusPaid    = "paid"
+
+	paymentProviderYipay       = "yipay"
+	paymentProviderOpenPayment = "openpayment"
 )
 
 type PaymentAPI struct{}
 
 type paymentConfig struct {
-	Enabled             bool
-	CurrencyDisplayName string
-	USDToRMBRate        decimal.Decimal
-	MinRechargeAmount   decimal.Decimal
-	RechargePresets     []string
-	Methods             []string
-	GatewayURL          string
-	PID                 string
-	Key                 string
-	NotifyURL           string
-	ReturnURL           string
+	Enabled               bool
+	Provider              string
+	CurrencyDisplayName   string
+	USDToRMBRate          decimal.Decimal
+	MinRechargeAmount     decimal.Decimal
+	RechargePresets       []string
+	Methods               []string
+	GatewayURL            string
+	PID                   string
+	Key                   string
+	NotifyURL             string
+	ReturnURL             string
+	OpenPaymentBaseURL    string
+	OpenPaymentConfigURL  string
+	OpenPaymentMerchantID string
+	OpenPaymentKey        string
+	OpenPaymentNotifyURL  string
+	OpenPaymentReturnURL  string
 }
 
 type paymentConfigResponse struct {
@@ -88,8 +98,8 @@ func (api *PaymentAPI) CreateOrder(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Payment is disabled"})
 		return
 	}
-	if strings.TrimSpace(cfg.GatewayURL) == "" || strings.TrimSpace(cfg.PID) == "" || strings.TrimSpace(cfg.Key) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Payment gateway is not configured"})
+	if err := validatePaymentGatewayConfig(cfg); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	var input createPaymentOrderInput
@@ -122,19 +132,20 @@ func (api *PaymentAPI) CreateOrder(c *gin.Context) {
 	}
 	rmbAmount := amount.Mul(cfg.USDToRMBRate).Round(2)
 	order := model.PaymentOrder{
-		OrderNo:      orderNo,
-		UserID:       user.ID,
-		Amount:       amount,
-		RMBAmount:    rmbAmount,
-		ExchangeRate: cfg.USDToRMBRate,
-		Method:       method,
-		Status:       paymentStatusPending,
+		OrderNo:         orderNo,
+		UserID:          user.ID,
+		Amount:          amount,
+		RMBAmount:       rmbAmount,
+		ExchangeRate:    cfg.USDToRMBRate,
+		Method:          method,
+		Status:          paymentStatusPending,
+		GatewayProvider: cfg.Provider,
 	}
 	if err := model.DB.Create(&order).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create payment order"})
 		return
 	}
-	paymentURL, err := buildYipayPaymentURL(c, cfg, order)
+	paymentURL, err := buildPaymentURL(c, cfg, order)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to build payment URL"})
 		return
@@ -159,7 +170,7 @@ func (api *PaymentAPI) GetOrder(c *gin.Context) {
 }
 
 func (api *PaymentAPI) Notify(c *gin.Context) {
-	ok, err := handleYipayCallback(c)
+	ok, err := handlePaymentCallback(c)
 	if err != nil {
 		c.String(http.StatusBadRequest, "fail")
 		return
@@ -168,17 +179,25 @@ func (api *PaymentAPI) Notify(c *gin.Context) {
 		c.String(http.StatusBadRequest, "fail")
 		return
 	}
-	c.String(http.StatusOK, "success")
+	c.String(http.StatusOK, paymentNotifySuccessBody(c))
 }
 
 func (api *PaymentAPI) Return(c *gin.Context) {
-	ok, _ := handleYipayCallback(c)
+	ok, _ := handlePaymentCallback(c)
 	status := "failed"
 	if ok {
 		status = "success"
 	}
-	orderNo := strings.TrimSpace(c.Query("out_trade_no"))
+	orderNo := firstNonEmptyString(strings.TrimSpace(c.Query("out_trade_no")), strings.TrimSpace(c.Query("merchant_order_no")))
 	c.Redirect(http.StatusFound, "/dashboard/settings?payment="+url.QueryEscape(status)+"&order_no="+url.QueryEscape(orderNo))
+}
+
+func handlePaymentCallback(c *gin.Context) (bool, error) {
+	cfg := currentPaymentConfig()
+	if cfg.Provider == paymentProviderOpenPayment {
+		return handleOpenPaymentCallback(c, cfg)
+	}
+	return handleYipayCallback(c)
 }
 
 func handleYipayCallback(c *gin.Context) (bool, error) {
@@ -236,18 +255,55 @@ func handleYipayCallback(c *gin.Context) (bool, error) {
 
 func currentPaymentConfig() paymentConfig {
 	return paymentConfig{
-		Enabled:             settingBool("payment_enabled", false),
-		CurrencyDisplayName: firstNonEmptyString(settingString("payment_currency_display_name", "$"), "$"),
-		USDToRMBRate:        settingDecimal("payment_usd_to_rmb_rate", "7.20"),
-		MinRechargeAmount:   settingDecimal("payment_min_recharge_amount", "1"),
-		RechargePresets:     parseJSONStringList(settingString("payment_recharge_presets", "[\"5\",\"10\",\"20\",\"50\",\"100\"]")),
-		Methods:             parseJSONStringList(settingString("payment_methods", "[\"alipay\",\"wxpay\"]")),
-		GatewayURL:          settingString("payment_yipay_gateway_url", ""),
-		PID:                 settingString("payment_yipay_pid", ""),
-		Key:                 settingString("payment_yipay_key", ""),
-		NotifyURL:           settingString("payment_yipay_notify_url", ""),
-		ReturnURL:           settingString("payment_yipay_return_url", ""),
+		Enabled:               settingBool("payment_enabled", false),
+		Provider:              normalizePaymentProvider(settingString("payment_gateway_provider", paymentProviderYipay)),
+		CurrencyDisplayName:   firstNonEmptyString(settingString("payment_currency_display_name", "$"), "$"),
+		USDToRMBRate:          settingDecimal("payment_usd_to_rmb_rate", "7.20"),
+		MinRechargeAmount:     settingDecimal("payment_min_recharge_amount", "1"),
+		RechargePresets:       parseJSONStringList(settingString("payment_recharge_presets", "[\"5\",\"10\",\"20\",\"50\",\"100\"]")),
+		Methods:               parseJSONStringList(settingString("payment_methods", "[\"alipay\",\"wxpay\"]")),
+		GatewayURL:            settingString("payment_yipay_gateway_url", ""),
+		PID:                   settingString("payment_yipay_pid", ""),
+		Key:                   settingString("payment_yipay_key", ""),
+		NotifyURL:             settingString("payment_yipay_notify_url", ""),
+		ReturnURL:             settingString("payment_yipay_return_url", ""),
+		OpenPaymentBaseURL:    settingString("payment_openpayment_base_url", ""),
+		OpenPaymentConfigURL:  settingString("payment_openpayment_config_url", ""),
+		OpenPaymentMerchantID: settingString("payment_openpayment_merchant_id", ""),
+		OpenPaymentKey:        settingString("payment_openpayment_key", ""),
+		OpenPaymentNotifyURL:  settingString("payment_openpayment_notify_url", ""),
+		OpenPaymentReturnURL:  settingString("payment_openpayment_return_url", ""),
 	}
+}
+
+func normalizePaymentProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "epay", "yipay":
+		return paymentProviderYipay
+	case "openpayment", "open-payment", "open_payment", "ops":
+		return paymentProviderOpenPayment
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+func validatePaymentGatewayConfig(cfg paymentConfig) error {
+	switch cfg.Provider {
+	case paymentProviderYipay:
+		if strings.TrimSpace(cfg.GatewayURL) == "" || strings.TrimSpace(cfg.PID) == "" || strings.TrimSpace(cfg.Key) == "" {
+			return errors.New("payment gateway is not configured")
+		}
+	case paymentProviderOpenPayment:
+		if strings.TrimSpace(firstNonEmptyString(cfg.OpenPaymentConfigURL, cfg.OpenPaymentBaseURL)) == "" {
+			return errors.New("Open Payment discovery URL is not configured")
+		}
+		if strings.TrimSpace(openPaymentMerchantID(cfg)) == "" || strings.TrimSpace(openPaymentMerchantKey(cfg)) == "" {
+			return errors.New("Open Payment merchant is not configured")
+		}
+	default:
+		return errors.New("unsupported payment gateway provider")
+	}
+	return nil
 }
 
 func parseJSONStringList(raw string) []string {
@@ -287,6 +343,13 @@ func generatePaymentOrderNo() (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("PAY%s%s", time.Now().Format("20060102150405"), strings.ToUpper(hex.EncodeToString(raw[:]))), nil
+}
+
+func buildPaymentURL(c *gin.Context, cfg paymentConfig, order model.PaymentOrder) (string, error) {
+	if cfg.Provider == paymentProviderOpenPayment {
+		return buildOpenPaymentPaymentURL(c, cfg, order)
+	}
+	return buildYipayPaymentURL(c, cfg, order)
 }
 
 func buildYipayPaymentURL(c *gin.Context, cfg paymentConfig, order model.PaymentOrder) (string, error) {
@@ -344,6 +407,14 @@ func verifyYipaySign(params map[string]string, key string) bool {
 func paymentParams(c *gin.Context) map[string]string {
 	_ = c.Request.ParseForm()
 	params := map[string]string{}
+	if strings.Contains(strings.ToLower(c.GetHeader("Content-Type")), "application/json") && c.Request.Body != nil {
+		var body map[string]interface{}
+		if err := json.NewDecoder(c.Request.Body).Decode(&body); err == nil {
+			for key, value := range body {
+				params[key] = fmt.Sprint(value)
+			}
+		}
+	}
 	for key, values := range c.Request.Form {
 		if len(values) > 0 {
 			params[key] = values[0]
@@ -360,7 +431,7 @@ func paymentParams(c *gin.Context) map[string]string {
 func yipayTradeSuccessful(params map[string]string) bool {
 	tradeStatus := strings.ToUpper(strings.TrimSpace(params["trade_status"]))
 	status := strings.ToLower(strings.TrimSpace(params["status"]))
-	return tradeStatus == "TRADE_SUCCESS" || tradeStatus == "SUCCESS" || status == "1" || status == "success" || strings.TrimSpace(params["trade_no"]) != ""
+	return tradeStatus == "TRADE_SUCCESS" || tradeStatus == "TRADE_FINISHED" || tradeStatus == "SUCCESS" || status == "1" || status == "success" || status == "paid" || strings.TrimSpace(params["trade_no"]) != ""
 }
 
 func paramsJSON(params map[string]string) string {
