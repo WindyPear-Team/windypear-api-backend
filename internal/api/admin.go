@@ -3200,8 +3200,32 @@ type upstreamChannelUsageItem struct {
 
 func (api *StatsAPI) GetLogs(c *gin.Context) {
 	var logs []model.TokenLog
-	model.DB.Limit(100).Order("created_at DESC").Find(&logs)
-	c.JSON(http.StatusOK, logs)
+	query := model.DB.Model(&model.TokenLog{})
+	if apiKeyID := positiveIntQuery(c, "api_key_id", 0); apiKeyID > 0 {
+		query = query.Where("api_key_id = ?", apiKeyID)
+	}
+	var err error
+	query, err = applyCreatedAtRange(query, c, "created_at")
+	if writePaginationError(c, err) {
+		return
+	}
+	if !wantsPaginatedResponse(c) {
+		query.Limit(100).Order("created_at DESC").Find(&logs)
+		c.JSON(http.StatusOK, logs)
+		return
+	}
+
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count usage logs"})
+		return
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&logs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load usage logs"})
+		return
+	}
+	c.JSON(http.StatusOK, paginatedResponse{Items: logs, Total: total, Page: page, PageSize: pageSize})
 }
 
 func (api *StatsAPI) GetChannelUsage(c *gin.Context) {
@@ -3266,8 +3290,32 @@ func (api *StatsAPI) GetUserLogs(c *gin.Context) {
 	}
 
 	var logs []model.TokenLog
-	model.DB.Where("user_id = ?", user.ID).Limit(100).Order("created_at DESC").Find(&logs)
-	c.JSON(http.StatusOK, logs)
+	query := model.DB.Model(&model.TokenLog{}).Where("user_id = ?", user.ID)
+	if apiKeyID := positiveIntQuery(c, "api_key_id", 0); apiKeyID > 0 {
+		query = query.Where("api_key_id = ?", apiKeyID)
+	}
+	var err error
+	query, err = applyCreatedAtRange(query, c, "created_at")
+	if writePaginationError(c, err) {
+		return
+	}
+	if !wantsPaginatedResponse(c) {
+		query.Limit(100).Order("created_at DESC").Find(&logs)
+		c.JSON(http.StatusOK, logs)
+		return
+	}
+
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count usage logs"})
+		return
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&logs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load usage logs"})
+		return
+	}
+	c.JSON(http.StatusOK, paginatedResponse{Items: logs, Total: total, Page: page, PageSize: pageSize})
 }
 
 func (api *StatsAPI) GetDashboardStats(c *gin.Context) {

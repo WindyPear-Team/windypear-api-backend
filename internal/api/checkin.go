@@ -116,7 +116,37 @@ func (api *CheckInAPI) ListRecords(c *gin.Context) {
 		return
 	}
 	var records []model.CheckInRecord
-	if err := model.DB.Where("user_id = ?", user.ID).Order("check_in_date DESC").Limit(100).Find(&records).Error; err != nil {
+	query := model.DB.Model(&model.CheckInRecord{}).Where("user_id = ?", user.ID)
+	var err error
+	query, err = applyDateStringRange(query, c, "check_in_date")
+	if writePaginationError(c, err) {
+		return
+	}
+	if !wantsPaginatedResponse(c) {
+		if err := query.Order("check_in_date DESC").Limit(100).Find(&records).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load check-in records"})
+			return
+		}
+		briefs := make([]checkInRecordBrief, 0, len(records))
+		for _, record := range records {
+			briefs = append(briefs, checkInRecordBrief{
+				CheckInDate:  record.CheckInDate,
+				RewardAmount: record.RewardAmount.String(),
+				StreakDays:   record.StreakDays,
+				RewardKind:   record.RewardKind,
+			})
+		}
+		c.JSON(http.StatusOK, briefs)
+		return
+	}
+
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count check-in records"})
+		return
+	}
+	if err := query.Order("check_in_date DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&records).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load check-in records"})
 		return
 	}
@@ -129,7 +159,7 @@ func (api *CheckInAPI) ListRecords(c *gin.Context) {
 			RewardKind:   record.RewardKind,
 		})
 	}
-	c.JSON(http.StatusOK, briefs)
+	c.JSON(http.StatusOK, paginatedResponse{Items: briefs, Total: total, Page: page, PageSize: pageSize})
 }
 
 func (api *CheckInAPI) Claim(c *gin.Context) {

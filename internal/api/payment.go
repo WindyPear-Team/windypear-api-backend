@@ -163,7 +163,32 @@ func (api *PaymentAPI) ListOrders(c *gin.Context) {
 		return
 	}
 	var orders []model.PaymentOrder
-	if err := model.DB.Where("user_id = ?", user.ID).Order("created_at DESC").Limit(100).Find(&orders).Error; err != nil {
+	query := model.DB.Model(&model.PaymentOrder{}).Where("user_id = ?", user.ID)
+	var err error
+	query, err = applyCreatedAtRange(query, c, "created_at")
+	if writePaginationError(c, err) {
+		return
+	}
+	if !wantsPaginatedResponse(c) {
+		if err := query.Order("created_at DESC").Limit(100).Find(&orders).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load payment orders"})
+			return
+		}
+		response := make([]paymentOrderResponse, 0, len(orders))
+		for _, order := range orders {
+			response = append(response, toPaymentOrderResponse(order))
+		}
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	page, pageSize := parsePagination(c)
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to count payment orders"})
+		return
+	}
+	if err := query.Order("created_at DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&orders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load payment orders"})
 		return
 	}
@@ -171,7 +196,7 @@ func (api *PaymentAPI) ListOrders(c *gin.Context) {
 	for _, order := range orders {
 		response = append(response, toPaymentOrderResponse(order))
 	}
-	c.JSON(http.StatusOK, response)
+	c.JSON(http.StatusOK, paginatedResponse{Items: response, Total: total, Page: page, PageSize: pageSize})
 }
 
 func (api *PaymentAPI) GetOrder(c *gin.Context) {
