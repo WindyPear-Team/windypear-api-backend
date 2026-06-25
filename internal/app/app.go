@@ -372,6 +372,9 @@ func Run() error {
 	}
 
 	// User Self APIs
+	publicAPI := r.Group("/api")
+	service.ApplyPublicAPIRouteHooks(publicAPI)
+
 	userGroup := r.Group("/api/user")
 	userGroup.Use(middleware.AuthMiddleware(authService))
 	{

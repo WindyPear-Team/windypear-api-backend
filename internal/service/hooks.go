@@ -51,6 +51,7 @@ type MetaModelCatalogItem struct {
 }
 
 var startupHooks []StartupHook
+var publicAPIRouteHooks []RouteHook
 var adminRouteHooks []RouteHook
 var userRouteHooks []RouteHook
 var usageChargeHook UsageChargeHook
@@ -78,8 +79,20 @@ func RegisterAdminRouteHook(hook RouteHook) {
 	adminRouteHooks = append(adminRouteHooks, hook)
 }
 
+func RegisterPublicAPIRouteHook(hook RouteHook) {
+	publicAPIRouteHooks = append(publicAPIRouteHooks, hook)
+}
+
 func RegisterUserRouteHook(hook RouteHook) {
 	userRouteHooks = append(userRouteHooks, hook)
+}
+
+func ApplyPublicAPIRouteHooks(group *gin.RouterGroup) {
+	for _, hook := range publicAPIRouteHooks {
+		if hook != nil {
+			hook(group)
+		}
+	}
 }
 
 func ApplyAdminRouteHooks(group *gin.RouterGroup) {
