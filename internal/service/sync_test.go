@@ -63,6 +63,38 @@ func TestParseUpstreamPriceItemsModelPriceObjects(t *testing.T) {
 	assertCachedPrice(t, prices, "claude-3-5-sonnet", "0.0015")
 }
 
+func TestParseUpstreamPriceItemsOpenAIVideoPrice(t *testing.T) {
+	body := []byte(`[
+		{
+			"model_name": "doubao-seedance-1-5-pro-251215",
+			"icon": "Doubao.Color",
+			"vendor_id": 7,
+			"quota_type": 1,
+			"model_ratio": 0,
+			"model_price": 0.12,
+			"owner_by": "",
+			"completion_ratio": 0,
+			"enable_groups": ["default"],
+			"supported_endpoint_types": ["openai-video"]
+		}
+	]`)
+
+	items, err := parseUpstreamPriceItems(body)
+	if err != nil {
+		t.Fatalf("parseUpstreamPriceItems returned error: %v", err)
+	}
+
+	prices := pricesByModel(items)
+	if prices["doubao-seedance-1-5-pro-251215"].QuotaType != 1 {
+		t.Fatalf("quota type = %d, want 1", prices["doubao-seedance-1-5-pro-251215"].QuotaType)
+	}
+	assertPrice(t, prices, "doubao-seedance-1-5-pro-251215", "0", "0.12")
+	assertCachedPrice(t, prices, "doubao-seedance-1-5-pro-251215", "0")
+	if !hasEndpointType(prices["doubao-seedance-1-5-pro-251215"].EndpointTypes, "openai-video") {
+		t.Fatalf("expected openai-video endpoint type")
+	}
+}
+
 func TestParseUpstreamPriceItemsSplitCachedPrices(t *testing.T) {
 	body := []byte(`{
 		"success": true,
@@ -81,6 +113,30 @@ func TestParseUpstreamPriceItemsSplitCachedPrices(t *testing.T) {
 	prices := pricesByModel(items)
 	assertPrice(t, prices, "gpt-4o", "2.5", "10")
 	assertCachedPrice(t, prices, "gpt-4o", "1.25")
+}
+
+func TestParseUpstreamPriceItemsSplitQuotaTypes(t *testing.T) {
+	body := []byte(`{
+		"success": true,
+		"data": {
+			"quota_type": { "video-model": 1 },
+			"input_price": { "video-model": 0 },
+			"output_price": { "video-model": 0.12 },
+			"cached_input_price": { "video-model": 0 }
+		}
+	}`)
+
+	items, err := parseUpstreamPriceItems(body)
+	if err != nil {
+		t.Fatalf("parseUpstreamPriceItems returned error: %v", err)
+	}
+
+	prices := pricesByModel(items)
+	if prices["video-model"].QuotaType != 1 {
+		t.Fatalf("quota type = %d, want 1", prices["video-model"].QuotaType)
+	}
+	assertPrice(t, prices, "video-model", "0", "0.12")
+	assertCachedPrice(t, prices, "video-model", "0")
 }
 
 func TestParseUpstreamPriceItemsNewAPITieredExpression(t *testing.T) {

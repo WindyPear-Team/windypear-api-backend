@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/WindyPear-Team/flai/internal/model"
+	"github.com/shopspring/decimal"
 )
 
 func TestRawProviderRequestKeepsClaudeMessagesEndpoint(t *testing.T) {
@@ -80,6 +81,40 @@ func TestPrepareOpenAIImageGenerationRequestRewritesModel(t *testing.T) {
 	}
 }
 
+func TestPrepareOpenAIVideoGenerationRequestRewritesModel(t *testing.T) {
+	channel := &model.Channel{BaseURL: "https://example.com/v1", APIKey: "upstream-key"}
+	requestBody := map[string]interface{}{
+		"model":  "doubao-seedance",
+		"prompt": "make a pear video",
+		"n":      float64(2),
+	}
+
+	request, err := prepareOpenAIVideoGenerationRequest(channel, "upstream-video-model", requestBody)
+	if err != nil {
+		t.Fatalf("prepareOpenAIVideoGenerationRequest returned error: %v", err)
+	}
+	if request.URL != "https://example.com/v1/videos/generations" {
+		t.Fatalf("video generation URL = %q", request.URL)
+	}
+	if request.Header.Get("Authorization") != "Bearer upstream-key" {
+		t.Fatalf("Authorization was not set from channel key")
+	}
+	if requestBody["model"] != "doubao-seedance" {
+		t.Fatalf("original request body was mutated")
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(request.Body, &payload); err != nil {
+		t.Fatalf("failed to decode prepared body: %v", err)
+	}
+	if payload["model"] != "upstream-video-model" {
+		t.Fatalf("prepared model = %q, want upstream model", payload["model"])
+	}
+	if payload["prompt"] != "make a pear video" {
+		t.Fatalf("prepared prompt was not preserved")
+	}
+}
+
 func TestEstimateImageUsageUsesResponseImageCount(t *testing.T) {
 	requestBody := map[string]interface{}{
 		"model":  "gpt-image-1",
@@ -99,6 +134,41 @@ func TestEstimateImageUsageUsesResponseImageCount(t *testing.T) {
 	}
 	if usage.OutputTokens != 2000000 {
 		t.Fatalf("expected one million output units per returned image, got %d", usage.OutputTokens)
+	}
+}
+
+func TestEstimateVideoUsageUsesResponseVideoCount(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model":  "doubao-seedance",
+		"prompt": "make a pear video",
+		"n":      float64(4),
+	}
+	responseData := map[string]interface{}{
+		"data": []interface{}{
+			map[string]interface{}{"url": "https://example.com/1.mp4"},
+			map[string]interface{}{"url": "https://example.com/2.mp4"},
+		},
+	}
+
+	usage := estimateVideoUsageTokens("doubao-seedance", requestBody, responseData)
+	if usage.InputTokens <= 0 {
+		t.Fatalf("expected prompt input tokens, got %d", usage.InputTokens)
+	}
+	if usage.OutputTokens != 2000000 {
+		t.Fatalf("expected one million output units per returned video, got %d", usage.OutputTokens)
+	}
+}
+
+func TestCalculatePerCallUsageCost(t *testing.T) {
+	got := calculateModelUsageCost(usageTokenCounts{
+		OutputTokens: 2000000,
+	}, model.Model{
+		QuotaType:   1,
+		OutputPrice: decimal.RequireFromString("0.12"),
+	})
+	want := decimal.RequireFromString("0.24")
+	if !got.Equal(want) {
+		t.Fatalf("calculateModelUsageCost() = %s, want %s", got.String(), want.String())
 	}
 }
 

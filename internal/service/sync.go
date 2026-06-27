@@ -52,6 +52,8 @@ type ChannelSyncResult struct {
 
 type upstreamModelPrice struct {
 	Model                 string
+	EndpointTypes         []string
+	QuotaType             int
 	InputPrice            decimal.Decimal
 	OutputPrice           decimal.Decimal
 	CachedInputPrice      decimal.Decimal
@@ -74,6 +76,7 @@ type ModelSyncPreview struct {
 
 type ModelSyncItem struct {
 	ModelName             string              `json:"model_name"`
+	QuotaType             int                 `json:"quota_type"`
 	InputPrice            decimal.Decimal     `json:"input_price"`
 	OutputPrice           decimal.Decimal     `json:"output_price"`
 	CachedInputPrice      decimal.Decimal     `json:"cached_input_price"`
@@ -343,6 +346,7 @@ func (s *SyncService) buildGlobalPriceSyncPreview(channel *model.Channel, source
 		_, exists := existingModels[modelName]
 		previewItems = append(previewItems, ModelSyncItem{
 			ModelName:             modelName,
+			QuotaType:             item.QuotaType,
 			InputPrice:            item.InputPrice,
 			OutputPrice:           item.OutputPrice,
 			CachedInputPrice:      item.CachedInputPrice,
@@ -385,7 +389,7 @@ func (s *SyncService) ApplyGlobalModelPrices(channelID uint, items []ModelSyncIt
 			continue
 		}
 		provider := ResolveModelProvider(modelName, item.Provider, item.ProviderIconURL)
-		if err := upsertGlobalModelPrice(modelName, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, provider, &result); err != nil {
+		if err := upsertGlobalModelPrice(modelName, item.QuotaType, item.InputPrice, item.OutputPrice, item.CachedInputPrice, item.InputPriceTiers, item.OutputPriceTiers, item.CachedInputPriceTiers, provider, &result); err != nil {
 			result.Error = err.Error()
 			return result, err
 		}
@@ -432,7 +436,8 @@ func upsertChannelModel(channel *model.Channel, modelName string, provider Model
 	return err
 }
 
-func upsertGlobalModelPrice(modelName string, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, provider ModelProvider, result *ChannelSyncResult) error {
+func upsertGlobalModelPrice(modelName string, quotaType int, inputPrice decimal.Decimal, outputPrice decimal.Decimal, cachedInputPrice decimal.Decimal, inputPriceTiers model.PriceTierList, outputPriceTiers model.PriceTierList, cachedInputPriceTiers model.PriceTierList, provider ModelProvider, result *ChannelSyncResult) error {
+	quotaType = normalizeQuotaType(quotaType)
 	var globalModel model.Model
 	err := model.DB.Where(&model.Model{ModelName: modelName}).First(&globalModel).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -440,6 +445,7 @@ func upsertGlobalModelPrice(modelName string, inputPrice decimal.Decimal, output
 			ModelName:             modelName,
 			Provider:              provider.ID,
 			ProviderIconURL:       provider.IconURL,
+			QuotaType:             quotaType,
 			InputPrice:            inputPrice,
 			OutputPrice:           outputPrice,
 			CachedInputPrice:      cachedInputPrice,
@@ -458,6 +464,7 @@ func upsertGlobalModelPrice(modelName string, inputPrice decimal.Decimal, output
 	}
 
 	updates := map[string]interface{}{
+		"quota_type":               quotaType,
 		"input_price":              inputPrice,
 		"output_price":             outputPrice,
 		"cached_input_price":       cachedInputPrice,
@@ -850,7 +857,8 @@ func splitPriceItemsFromMap(value map[string]interface{}) []upstreamModelPrice {
 	modelRatios, hasModelRatios := firstMapValue(value, "model_ratio", "modelRatio", "model_ratios", "modelRatios")
 	completionRatios, hasCompletionRatios := firstMapValue(value, "completion_ratio", "completionRatio", "completion_ratios", "completionRatios")
 	genericPrices, hasGenericPrices := firstMapValue(value, "price", "prices", "ratio", "ratios", "model_price", "modelPrice", "model_prices", "modelPrices")
-	if !hasInputPrices && !hasOutputPrices && !hasCachedInputPrices && !hasInputPriceTiers && !hasOutputPriceTiers && !hasCachedInputPriceTiers && !hasModelRatios && !hasCompletionRatios && !hasGenericPrices {
+	quotaTypes, hasQuotaTypes := firstMapValue(value, "quota_type", "quotaType", "quota_types", "quotaTypes")
+	if !hasInputPrices && !hasOutputPrices && !hasCachedInputPrices && !hasInputPriceTiers && !hasOutputPriceTiers && !hasCachedInputPriceTiers && !hasModelRatios && !hasCompletionRatios && !hasGenericPrices && !hasQuotaTypes {
 		return nil
 	}
 
@@ -871,6 +879,7 @@ func splitPriceItemsFromMap(value map[string]interface{}) []upstreamModelPrice {
 	addMapKeys(modelRatios)
 	addMapKeys(completionRatios)
 	addMapKeys(genericPrices)
+	addMapKeys(quotaTypes)
 	if len(modelNames) == 0 {
 		return nil
 	}
@@ -892,6 +901,8 @@ func splitPriceItemsFromMap(value map[string]interface{}) []upstreamModelPrice {
 		modelRatio, modelRatioOK := decimalFromMapValue(modelRatios, name)
 		completionRatio, completionRatioOK := decimalFromMapValue(completionRatios, name)
 		genericPrice, genericPriceOK := priceItemFromMapValue(genericPrices, name)
+		quotaType, _ := intFromMapValue(quotaTypes, name)
+		quotaType = normalizeQuotaType(quotaType)
 
 		if !inputOK && modelRatioOK {
 			inputPrice = modelRatio
@@ -946,6 +957,7 @@ func splitPriceItemsFromMap(value map[string]interface{}) []upstreamModelPrice {
 
 		items = append(items, upstreamModelPrice{
 			Model:                 name,
+			QuotaType:             quotaType,
 			InputPrice:            inputPrice,
 			OutputPrice:           outputPrice,
 			CachedInputPrice:      cachedInputPrice,
@@ -1026,6 +1038,10 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 	if strings.TrimSpace(modelName) == "" {
 		return upstreamModelPrice{}, false
 	}
+	endpointTypes := endpointTypesFromMap(value)
+	quotaType, _ := firstIntValue(value, "quota_type", "quotaType")
+	quotaType = normalizeQuotaType(quotaType)
+	perCallPricing := quotaType == 1
 
 	inputPrice, inputOK := firstDecimalValue(value, "input_price", "inputPrice", "prompt_price", "promptPrice", "prompt_token_price", "promptTokenPrice", "input_token_price", "inputTokenPrice", "input", "prompt", "input_ratio", "inputRatio", "prompt_ratio", "promptRatio")
 	outputPrice, outputOK := firstDecimalValue(value, "output_price", "outputPrice", "completion_price", "completionPrice", "completion_token_price", "completionTokenPrice", "output_token_price", "outputTokenPrice", "completion", "output", "output_ratio", "outputRatio")
@@ -1051,34 +1067,49 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 	modelRatio, modelRatioOK := firstDecimalValue(value, "model_ratio", "modelRatio")
 	completionRatio, completionRatioOK := firstDecimalValue(value, "completion_ratio", "completionRatio")
 	genericPrice, genericPriceOK := firstDecimalValue(value, "price", "model_price", "modelPrice", "ratio")
-	if !inputTiersOK && genericTiersOK {
+	if !inputTiersOK && genericTiersOK && !perCallPricing {
 		inputPriceTiers = genericPriceTiers
 	}
 	if !outputTiersOK && genericTiersOK {
 		outputPriceTiers = genericPriceTiers
 	}
-	if !cachedInputTiersOK && genericTiersOK {
+	if !cachedInputTiersOK && genericTiersOK && !perCallPricing {
 		cachedInputPriceTiers = genericPriceTiers
 	}
-	if !inputOK && modelRatioOK {
-		inputPrice = modelRatio
-		inputOK = true
-	}
-	if !inputOK && genericPriceOK {
-		inputPrice = genericPrice
-		inputOK = true
-	}
-	if !outputOK {
-		switch {
-		case modelRatioOK && completionRatioOK:
-			outputPrice = modelRatio.Mul(completionRatio)
-			outputOK = true
-		case inputOK && completionRatioOK:
-			outputPrice = inputPrice.Mul(completionRatio)
-			outputOK = true
-		case genericPriceOK:
+	if perCallPricing {
+		if !outputOK && genericPriceOK {
 			outputPrice = genericPrice
 			outputOK = true
+		}
+		if !inputOK {
+			inputPrice = decimal.Zero
+			inputOK = true
+		}
+		if !cachedInputOK {
+			cachedInputPrice = decimal.Zero
+			cachedInputOK = true
+		}
+	} else {
+		if !inputOK && modelRatioOK {
+			inputPrice = modelRatio
+			inputOK = true
+		}
+		if !inputOK && genericPriceOK {
+			inputPrice = genericPrice
+			inputOK = true
+		}
+		if !outputOK {
+			switch {
+			case modelRatioOK && completionRatioOK:
+				outputPrice = modelRatio.Mul(completionRatio)
+				outputOK = true
+			case inputOK && completionRatioOK:
+				outputPrice = inputPrice.Mul(completionRatio)
+				outputOK = true
+			case genericPriceOK:
+				outputPrice = genericPrice
+				outputOK = true
+			}
 		}
 	}
 	if !inputOK && outputOK {
@@ -1097,6 +1128,8 @@ func priceItemFromMap(modelName string, value map[string]interface{}) (upstreamM
 
 	return upstreamModelPrice{
 		Model:                 modelName,
+		EndpointTypes:         endpointTypes,
+		QuotaType:             quotaType,
 		InputPrice:            inputPrice,
 		OutputPrice:           outputPrice,
 		CachedInputPrice:      cachedInputPrice,
@@ -1232,6 +1265,77 @@ func normalizeSyncPath(path string) string {
 	return path
 }
 
+func endpointTypesFromMap(value map[string]interface{}) []string {
+	for _, key := range []string{"supported_endpoint_types", "supportedEndpointTypes", "endpoint_types", "endpointTypes", "endpoints"} {
+		if raw, ok := value[key]; ok {
+			return endpointTypesFromValue(raw)
+		}
+	}
+	return nil
+}
+
+func endpointTypesFromValue(value interface{}) []string {
+	switch typed := value.(type) {
+	case []interface{}:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				text = strings.TrimSpace(text)
+				if text != "" {
+					items = append(items, text)
+				}
+			}
+		}
+		return items
+	case []string:
+		items := make([]string, 0, len(typed))
+		for _, item := range typed {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				items = append(items, item)
+			}
+		}
+		return items
+	case string:
+		parts := strings.FieldsFunc(typed, func(r rune) bool {
+			return r == ',' || r == ';' || r == '|'
+		})
+		items := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				items = append(items, part)
+			}
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func hasEndpointType(endpointTypes []string, want string) bool {
+	want = normalizeEndpointType(want)
+	for _, endpointType := range endpointTypes {
+		if normalizeEndpointType(endpointType) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeQuotaType(value int) int {
+	if value == 1 {
+		return 1
+	}
+	return 0
+}
+
+func normalizeEndpointType(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.ReplaceAll(value, "_", "-")
+	return value
+}
+
 func firstStringValue(value map[string]interface{}, fallback string, keys ...string) string {
 	for _, key := range keys {
 		if raw, ok := value[key].(string); ok && strings.TrimSpace(raw) != "" {
@@ -1267,6 +1371,17 @@ func decimalFromMapValue(value map[string]interface{}, key string) (decimal.Deci
 		return firstDecimalValue(nested, "input_price", "inputPrice", "output_price", "outputPrice", "prompt_price", "promptPrice", "completion_price", "completionPrice", "model_ratio", "modelRatio", "completion_ratio", "completionRatio", "price", "ratio")
 	}
 	return decimal.Zero, false
+}
+
+func intFromMapValue(value map[string]interface{}, key string) (int, bool) {
+	if value == nil {
+		return 0, false
+	}
+	raw, ok := value[key]
+	if !ok {
+		return 0, false
+	}
+	return intFromValue(raw)
 }
 
 func priceItemFromMapValue(value map[string]interface{}, key string) (upstreamModelPrice, bool) {

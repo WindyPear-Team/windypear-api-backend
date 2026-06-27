@@ -223,6 +223,7 @@ type Model struct {
 	ModelName                   string          `gorm:"uniqueIndex;size:100;not null" json:"model_name"`
 	Provider                    string          `gorm:"size:50" json:"provider"` // e.g., openai, deepseek
 	ProviderIconURL             string          `gorm:"size:255" json:"provider_icon_url"`
+	QuotaType                   int             `gorm:"default:0" json:"quota_type"`                             // 0 = per token, 1 = per request/item
 	InputPrice                  decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"input_price"`        // price per 1M tokens
 	OutputPrice                 decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"output_price"`       // price per 1M tokens
 	CachedInputPrice            decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"cached_input_price"` // cached input price per 1M tokens

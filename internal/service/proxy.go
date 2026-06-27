@@ -48,10 +48,11 @@ type modelListDataItem struct {
 type proxyProtocol string
 
 const (
-	protocolOpenAI    proxyProtocol = "openai"
-	protocolResponses proxyProtocol = "responses"
-	protocolClaude    proxyProtocol = "claude"
-	protocolGemini    proxyProtocol = "gemini"
+	protocolOpenAI      proxyProtocol = "openai"
+	protocolResponses   proxyProtocol = "responses"
+	protocolOpenAIVideo proxyProtocol = "openai-video"
+	protocolClaude      proxyProtocol = "claude"
+	protocolGemini      proxyProtocol = "gemini"
 )
 
 const (
@@ -269,6 +270,96 @@ func (s *ProxyService) HandleImageGeneration(c *gin.Context) {
 
 	usage := imageUsageTokenCounts(target.ModelName, requestBody, responseData)
 	if status, message, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
+		c.JSON(status, gin.H{"error": message})
+		return
+	}
+
+	writeUpstreamResponse(c, resp, respBody)
+}
+
+func (s *ProxyService) HandleVideoGeneration(c *gin.Context) {
+	requestBody, _, ok := readProxyJSONBody(c)
+	if !ok {
+		return
+	}
+
+	modelName, ok := requestBody["model"].(string)
+	if !ok || strings.TrimSpace(modelName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Model not specified"})
+		return
+	}
+
+	target, ok := s.resolveTarget(c, modelName)
+	if !ok {
+		return
+	}
+
+	if SensitiveFilterEnabled() {
+		if _, matched := MatchSensitiveWords(videoRequestText(requestBody)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
+			return
+		}
+	}
+
+	upstreamProtocol := channelProtocol(target.Channel.Type)
+	if !supportsOpenAIVideoEndpoint(upstreamProtocol) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Video generation is only supported for OpenAI video upstream channels", "type": "unsupported_upstream"})
+		return
+	}
+
+	if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
+		return
+	}
+
+	prepared, err := prepareOpenAIVideoGenerationRequest(&target.Channel, target.upstreamModelName(), requestBody)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
+		return
+	}
+
+	resp, err := s.doUpstreamRequest(prepared)
+	if err != nil {
+		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+			return
+		}
+		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, prepared.Body, respBody)
+		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return
+	}
+
+	if isStreamingResponse(resp) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported for this endpoint", "type": "unsupported_stream"})
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+		return
+	}
+
+	var responseData map[string]interface{}
+	_ = json.Unmarshal(respBody, &responseData)
+	if SensitiveFilterEnabled() && SensitiveFilterScope() == SensitiveFilterScopeRequestResponse && responseData != nil {
+		if _, matched := MatchSensitiveWords(videoResponseText(responseData)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Response blocked by content policy", "type": "content_policy"})
+			return
+		}
+	}
+
+	billingModel := target.billingModel()
+	usage := videoUsageTokenCounts(target.ModelName, requestBody, responseData, billingModel.QuotaType)
+	if status, message, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, billingModel); err != nil {
 		c.JSON(status, gin.H{"error": message})
 		return
 	}
@@ -737,6 +828,17 @@ func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model
 }
 
 func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) decimal.Decimal {
+	if modelConfig.QuotaType == 1 {
+		count := usage.OutputTokens / 1000000
+		if usage.OutputTokens%1000000 != 0 {
+			count++
+		}
+		if count <= 0 {
+			count = 1
+		}
+		return modelConfig.OutputPrice.Mul(decimal.NewFromInt(int64(count)))
+	}
+
 	metrics := PriceTierMetrics{
 		FullInputTokens:      usage.InputTokens,
 		BillableInputTokens:  billableInputTokens(usage),
@@ -1303,6 +1405,32 @@ func prepareOpenAIImageGenerationRequest(channel *model.Channel, upstreamModelNa
 	}, nil
 }
 
+func prepareOpenAIVideoGenerationRequest(channel *model.Channel, upstreamModelName string, requestBody map[string]interface{}) (preparedUpstreamRequest, error) {
+	upstreamModelName = strings.TrimSpace(upstreamModelName)
+	if upstreamModelName == "" {
+		return preparedUpstreamRequest{}, errors.New("model is required")
+	}
+
+	payload := make(map[string]interface{}, len(requestBody))
+	for key, value := range requestBody {
+		payload[key] = value
+	}
+	payload["model"] = upstreamModelName
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return preparedUpstreamRequest{}, err
+	}
+	headers := jsonHeaders()
+	headers.Set("Authorization", "Bearer "+strings.TrimSpace(channel.APIKey))
+	return preparedUpstreamRequest{
+		Method: http.MethodPost,
+		URL:    upstreamURLForRequest(channel.BaseURL, "/v1/videos/generations"),
+		Body:   body,
+		Header: headers,
+	}, nil
+}
+
 func jsonHeaders() http.Header {
 	headers := http.Header{}
 	headers.Set("Content-Type", "application/json")
@@ -1331,6 +1459,8 @@ func channelProtocol(channelType string) proxyProtocol {
 		return protocolOpenAI
 	case "responses", "response", "openai_responses":
 		return protocolResponses
+	case "openai-video", "openai_video", "video":
+		return protocolOpenAIVideo
 	case "claude", "anthropic":
 		return protocolClaude
 	case "gemini", "google":
@@ -1342,6 +1472,10 @@ func channelProtocol(channelType string) proxyProtocol {
 
 func supportsOpenAIImageEndpoint(protocol proxyProtocol) bool {
 	return protocol == protocolOpenAI || protocol == protocolResponses
+}
+
+func supportsOpenAIVideoEndpoint(protocol proxyProtocol) bool {
+	return protocol == protocolOpenAIVideo
 }
 
 func normalizeProviderRequest(protocol proxyProtocol, path string, requestBody map[string]interface{}, modelName string) normalizedAIRequest {
@@ -1864,6 +1998,70 @@ func estimateImageUsageTokens(modelName string, requestBody map[string]interface
 		OutputTokens:      imageCount * 1000000,
 		ImageOutputTokens: imageCount * 1000000,
 	}
+}
+
+func videoUsageTokenCounts(modelName string, requestBody map[string]interface{}, responseData map[string]interface{}, quotaType int) usageTokenCounts {
+	if quotaType != 1 && responseData != nil {
+		if usage, ok := parseUsageTokens(responseData); ok {
+			return usage
+		}
+	}
+	return estimateVideoUsageTokens(modelName, requestBody, responseData)
+}
+
+func estimateVideoUsageTokens(modelName string, requestBody map[string]interface{}, responseData map[string]interface{}) usageTokenCounts {
+	videoCount := videoCountFromPayloads(requestBody, responseData)
+	return usageTokenCounts{
+		InputTokens:  CountTokens(modelName, videoRequestText(requestBody)),
+		OutputTokens: videoCount * 1000000,
+	}
+}
+
+func videoCountFromPayloads(requestBody map[string]interface{}, responseData map[string]interface{}) int {
+	if responseData != nil {
+		if data, ok := responseData["data"].([]interface{}); ok && len(data) > 0 {
+			return len(data)
+		}
+	}
+	for _, key := range []string{"n", "num_videos", "count"} {
+		if value, ok := tokenValueAsInt(requestBody[key]); ok && value > 0 {
+			return value
+		}
+	}
+	return 1
+}
+
+func videoRequestText(requestBody map[string]interface{}) string {
+	parts := []string{}
+	for _, key := range []string{"prompt", "negative_prompt", "input", "first_frame_prompt"} {
+		if text := contentToText(requestBody[key]); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func videoResponseText(responseData map[string]interface{}) string {
+	parts := []string{}
+	if data, ok := responseData["data"].([]interface{}); ok {
+		for _, raw := range data {
+			item, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, key := range []string{"revised_prompt", "prompt", "status"} {
+				if text := contentToText(item[key]); strings.TrimSpace(text) != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+	}
+	if errorValue, ok := responseData["error"]; ok {
+		if text := contentToText(errorValue); strings.TrimSpace(text) != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func imageCountFromPayloads(requestBody map[string]interface{}, responseData map[string]interface{}) int {

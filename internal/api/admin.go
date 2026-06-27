@@ -1257,6 +1257,7 @@ type modelConfigInput struct {
 	UpstreamModelName           string              `json:"upstream_model_name"`
 	Provider                    string              `json:"provider"`
 	ProviderIconURL             string              `json:"provider_icon_url"`
+	QuotaType                   int                 `json:"quota_type"`
 	InputPrice                  decimal.Decimal     `json:"input_price"`
 	OutputPrice                 decimal.Decimal     `json:"output_price"`
 	CachedInputPrice            decimal.Decimal     `json:"cached_input_price"`
@@ -1286,6 +1287,7 @@ type publicModelCatalogItem struct {
 	ProviderIconURL             string                   `json:"provider_icon_url"`
 	IsMetaModel                 bool                     `json:"is_meta_model"`
 	MetaBillingMode             string                   `json:"meta_billing_mode,omitempty"`
+	QuotaType                   int                      `json:"quota_type"`
 	InputPrice                  decimal.Decimal          `json:"input_price"`
 	OutputPrice                 decimal.Decimal          `json:"output_price"`
 	CachedInputPrice            decimal.Decimal          `json:"cached_input_price"`
@@ -1313,6 +1315,7 @@ type publicModelUserChannel struct {
 	Name                                 string              `json:"name"`
 	Description                          string              `json:"description"`
 	Multiplier                           decimal.Decimal     `json:"multiplier"`
+	QuotaType                            int                 `json:"quota_type"`
 	InputPrice                           decimal.Decimal     `json:"input_price"`
 	OutputPrice                          decimal.Decimal     `json:"output_price"`
 	CachedInputPrice                     decimal.Decimal     `json:"cached_input_price"`
@@ -1376,6 +1379,7 @@ type pricingData struct {
 	ImageOutputPrice                map[string]decimal.Decimal         `json:"image_output_price"`
 	AudioInputPrice                 map[string]decimal.Decimal         `json:"audio_input_price"`
 	AudioOutputPrice                map[string]decimal.Decimal         `json:"audio_output_price"`
+	QuotaType                       map[string]int                     `json:"quota_type"`
 	InputPriceTiers                 map[string]model.PriceTierList     `json:"input_price_tiers"`
 	OutputPriceTiers                map[string]model.PriceTierList     `json:"output_price_tiers"`
 	CachedInputPriceTiers           map[string]model.PriceTierList     `json:"cached_input_price_tiers"`
@@ -1396,6 +1400,7 @@ type pricingData struct {
 	BaseImageOutputPrice            map[string]decimal.Decimal         `json:"base_image_output_price"`
 	BaseAudioInputPrice             map[string]decimal.Decimal         `json:"base_audio_input_price"`
 	BaseAudioOutputPrice            map[string]decimal.Decimal         `json:"base_audio_output_price"`
+	BaseQuotaType                   map[string]int                     `json:"base_quota_type"`
 	BaseInputPriceTiers             map[string]model.PriceTierList     `json:"base_input_price_tiers"`
 	BaseOutputPriceTiers            map[string]model.PriceTierList     `json:"base_output_price_tiers"`
 	BaseCachedInputPriceTiers       map[string]model.PriceTierList     `json:"base_cached_input_price_tiers"`
@@ -1414,6 +1419,7 @@ type pricingUserChannelPrice struct {
 	Name                        string                         `json:"name"`
 	Description                 string                         `json:"description"`
 	Multiplier                  decimal.Decimal                `json:"multiplier"`
+	QuotaType                   map[string]int                 `json:"quota_type"`
 	ModelRatio                  map[string]decimal.Decimal     `json:"model_ratio"`
 	CompletionRatio             map[string]decimal.Decimal     `json:"completion_ratio"`
 	InputPrice                  map[string]decimal.Decimal     `json:"input_price"`
@@ -1458,6 +1464,7 @@ func (api *ModelAPI) PublicCatalog(c *gin.Context) {
 		if modelName == "" {
 			continue
 		}
+		quotaType := config.Model.QuotaType
 		inputPrice := config.Model.InputPrice
 		outputPrice := config.Model.OutputPrice
 		cachedInputPrice := config.Model.CachedInputPrice
@@ -1486,6 +1493,7 @@ func (api *ModelAPI) PublicCatalog(c *gin.Context) {
 					Provider:                    provider.ID,
 					ProviderName:                provider.Name,
 					ProviderIconURL:             provider.IconURL,
+					QuotaType:                   quotaType,
 					InputPrice:                  inputPrice,
 					OutputPrice:                 outputPrice,
 					CachedInputPrice:            cachedInputPrice,
@@ -1578,6 +1586,7 @@ func (api *ModelAPI) PublicCatalog(c *gin.Context) {
 				Name:                                 userChannel.Name,
 				Description:                          userChannel.Description,
 				Multiplier:                           userChannel.Multiplier,
+				QuotaType:                            quotaType,
 				InputPrice:                           inputPrice,
 				OutputPrice:                          outputPrice,
 				CachedInputPrice:                     cachedInputPrice,
@@ -1885,6 +1894,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		ImageOutputPrice:                map[string]decimal.Decimal{},
 		AudioInputPrice:                 map[string]decimal.Decimal{},
 		AudioOutputPrice:                map[string]decimal.Decimal{},
+		QuotaType:                       map[string]int{},
 		InputPriceTiers:                 map[string]model.PriceTierList{},
 		OutputPriceTiers:                map[string]model.PriceTierList{},
 		CachedInputPriceTiers:           map[string]model.PriceTierList{},
@@ -1905,6 +1915,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		BaseImageOutputPrice:            map[string]decimal.Decimal{},
 		BaseAudioInputPrice:             map[string]decimal.Decimal{},
 		BaseAudioOutputPrice:            map[string]decimal.Decimal{},
+		BaseQuotaType:                   map[string]int{},
 		BaseInputPriceTiers:             map[string]model.PriceTierList{},
 		BaseOutputPriceTiers:            map[string]model.PriceTierList{},
 		BaseCachedInputPriceTiers:       map[string]model.PriceTierList{},
@@ -1941,6 +1952,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		baseImageOutput := config.Model.ImageOutputPrice
 		baseAudioInput := config.Model.AudioInputPrice
 		baseAudioOutput := config.Model.AudioOutputPrice
+		baseQuotaType := config.Model.QuotaType
 		baseInputTiers := model.NormalizePriceTiers(config.Model.InputPriceTiers)
 		baseOutputTiers := model.NormalizePriceTiers(config.Model.OutputPriceTiers)
 		baseCachedInputTiers := model.NormalizePriceTiers(config.Model.CachedInputPriceTiers)
@@ -1979,6 +1991,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		setMinDecimalWithTiers(data.BaseImageOutputPrice, data.BaseImageOutputPriceTiers, modelName, baseImageOutput, baseImageOutputTiers)
 		setMinDecimalWithTiers(data.BaseAudioInputPrice, data.BaseAudioInputPriceTiers, modelName, baseAudioInput, baseAudioInputTiers)
 		setMinDecimalWithTiers(data.BaseAudioOutputPrice, data.BaseAudioOutputPriceTiers, modelName, baseAudioOutput, baseAudioOutputTiers)
+		data.BaseQuotaType[modelName] = baseQuotaType
 		setMinDecimalWithTiers(data.InputPrice, data.InputPriceTiers, modelName, effectiveInput, effectiveInputTiers)
 		setMinDecimalWithTiers(data.OutputPrice, data.OutputPriceTiers, modelName, effectiveOutput, effectiveOutputTiers)
 		setMinDecimalWithTiers(data.CachedInputPrice, data.CachedInputPriceTiers, modelName, effectiveCachedInput, effectiveCachedInputTiers)
@@ -1989,6 +2002,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		setMinDecimalWithTiers(data.ImageOutputPrice, data.ImageOutputPriceTiers, modelName, effectiveImageOutput, effectiveImageOutputTiers)
 		setMinDecimalWithTiers(data.AudioInputPrice, data.AudioInputPriceTiers, modelName, effectiveAudioInput, effectiveAudioInputTiers)
 		setMinDecimalWithTiers(data.AudioOutputPrice, data.AudioOutputPriceTiers, modelName, effectiveAudioOutput, effectiveAudioOutputTiers)
+		data.QuotaType[modelName] = baseQuotaType
 
 		channelPrice, exists := channelPrices[userChannel.ID]
 		if !exists {
@@ -1997,6 +2011,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 				Name:                        userChannel.Name,
 				Description:                 userChannel.Description,
 				Multiplier:                  userChannel.Multiplier,
+				QuotaType:                   map[string]int{},
 				ModelRatio:                  map[string]decimal.Decimal{},
 				CompletionRatio:             map[string]decimal.Decimal{},
 				InputPrice:                  map[string]decimal.Decimal{},
@@ -2032,6 +2047,7 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		setMinDecimalWithTiers(channelPrice.ImageOutputPrice, channelPrice.ImageOutputPriceTiers, modelName, effectiveImageOutput, effectiveImageOutputTiers)
 		setMinDecimalWithTiers(channelPrice.AudioInputPrice, channelPrice.AudioInputPriceTiers, modelName, effectiveAudioInput, effectiveAudioInputTiers)
 		setMinDecimalWithTiers(channelPrice.AudioOutputPrice, channelPrice.AudioOutputPriceTiers, modelName, effectiveAudioOutput, effectiveAudioOutputTiers)
+		channelPrice.QuotaType[modelName] = baseQuotaType
 	}
 
 	data.ModelRatio = copyDecimalMap(data.InputPrice)
@@ -2527,6 +2543,7 @@ func modelFromInput(input modelConfigInput, existing *model.Model) (model.Model,
 	if strings.TrimSpace(input.ProviderIconURL) != "" || strings.TrimSpace(globalModel.ProviderIconURL) == "" {
 		globalModel.ProviderIconURL = provider.IconURL
 	}
+	globalModel.QuotaType = normalizeQuotaType(input.QuotaType)
 	globalModel.InputPrice = input.InputPrice
 	globalModel.OutputPrice = input.OutputPrice
 	globalModel.CachedInputPrice = input.CachedInputPrice
@@ -2551,6 +2568,13 @@ func modelFromInput(input modelConfigInput, existing *model.Model) (model.Model,
 		globalModel.Enabled = true
 	}
 	return globalModel, nil
+}
+
+func normalizeQuotaType(value int) int {
+	if value == 1 {
+		return 1
+	}
+	return 0
 }
 
 func modelConfigFromInput(input modelConfigInput, existing *model.ModelConfig) (model.ModelConfig, error) {

@@ -293,6 +293,7 @@ func Run() error {
 		gateway.POST("/completions", proxyService.HandleRequest)
 		gateway.POST("/responses", proxyService.HandleRequest)
 		gateway.POST("/images/generations", proxyService.HandleImageGeneration)
+		gateway.POST("/videos/generations", proxyService.HandleVideoGeneration)
 		gateway.POST("/messages", proxyService.HandleClaudeMessages)
 		gateway.POST("/models/:modelAction", proxyService.HandleGeminiGenerateContent)
 	}
