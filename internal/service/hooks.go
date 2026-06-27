@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -19,6 +20,7 @@ type UsageChargeHook func(tx *gorm.DB, userID uint, cost decimal.Decimal) error
 type MetaModelListHook func(*gin.Context) ([]string, error)
 type MetaModelResolveHook func(*gin.Context, MetaModelResolveInput) (MetaModelResolveResult, error)
 type MetaModelCatalogHook func(*gin.Context) ([]MetaModelCatalogItem, error)
+type GeneratedAssetHook func(context.Context, GeneratedAssetInput)
 
 type MetaModelResolveInput struct {
 	ModelName    string
@@ -50,6 +52,15 @@ type MetaModelCatalogItem struct {
 	ReferencedModels       []string        `json:"referenced_models"`
 }
 
+type GeneratedAssetInput struct {
+	UserID       uint
+	Kind         string
+	ModelName    string
+	ResponseData map[string]interface{}
+	ResponseBody []byte
+	Source       string
+}
+
 var startupHooks []StartupHook
 var publicAPIRouteHooks []RouteHook
 var adminRouteHooks []RouteHook
@@ -58,6 +69,7 @@ var usageChargeHook UsageChargeHook
 var metaModelListHook MetaModelListHook
 var metaModelResolveHook MetaModelResolveHook
 var metaModelCatalogHook MetaModelCatalogHook
+var generatedAssetHook GeneratedAssetHook
 
 func RegisterStartupHook(hook StartupHook) {
 	startupHooks = append(startupHooks, hook)
@@ -124,6 +136,10 @@ func RegisterMetaModelCatalogHook(hook MetaModelCatalogHook) {
 	metaModelCatalogHook = hook
 }
 
+func RegisterGeneratedAssetHook(hook GeneratedAssetHook) {
+	generatedAssetHook = hook
+}
+
 func ListMetaModelNames(c *gin.Context) ([]string, error) {
 	if metaModelListHook == nil {
 		return nil, nil
@@ -136,6 +152,13 @@ func ListMetaModelCatalog(c *gin.Context) ([]MetaModelCatalogItem, error) {
 		return nil, nil
 	}
 	return metaModelCatalogHook(c)
+}
+
+func ApplyGeneratedAssetHook(ctx context.Context, input GeneratedAssetInput) {
+	if generatedAssetHook == nil {
+		return
+	}
+	generatedAssetHook(ctx, input)
 }
 
 func ResolveMetaModel(c *gin.Context, input MetaModelResolveInput) (MetaModelResolveResult, error) {

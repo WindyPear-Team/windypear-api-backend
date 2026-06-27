@@ -388,6 +388,15 @@ func (s *ProxyService) HandleImageGeneration(c *gin.Context) {
 		return
 	}
 
+	ApplyGeneratedAssetHook(c.Request.Context(), GeneratedAssetInput{
+		UserID:       target.User.ID,
+		Kind:         "image",
+		ModelName:    target.ModelName,
+		ResponseData: responseData,
+		ResponseBody: respBody,
+		Source:       "image_generation",
+	})
+
 	writeUpstreamResponse(c, resp, respBody)
 }
 
@@ -482,6 +491,15 @@ func (s *ProxyService) HandleImageEdit(c *gin.Context) {
 		return
 	}
 
+	ApplyGeneratedAssetHook(c.Request.Context(), GeneratedAssetInput{
+		UserID:       target.User.ID,
+		Kind:         "image",
+		ModelName:    target.ModelName,
+		ResponseData: responseData,
+		ResponseBody: respBody,
+		Source:       "image_edit",
+	})
+
 	writeUpstreamResponse(c, resp, respBody)
 }
 
@@ -495,6 +513,15 @@ func (s *ProxyService) HandleVideoGeneration(c *gin.Context) {
 	if !ok {
 		return
 	}
+
+	ApplyGeneratedAssetHook(c.Request.Context(), GeneratedAssetInput{
+		UserID:       result.Target.User.ID,
+		Kind:         "video",
+		ModelName:    result.Target.ModelName,
+		ResponseData: result.ResponseData,
+		ResponseBody: result.Body,
+		Source:       "video_generation",
+	})
 
 	writeUpstreamResponse(c, result.Response, result.Body)
 }
@@ -543,7 +570,17 @@ func (s *ProxyService) HandleVideoTaskCreate(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, videoTaskResponse(task, result.ResponseData))
+	response := videoTaskResponse(task, result.ResponseData)
+	ApplyGeneratedAssetHook(c.Request.Context(), GeneratedAssetInput{
+		UserID:       result.Target.User.ID,
+		Kind:         "video",
+		ModelName:    result.Target.ModelName,
+		ResponseData: result.ResponseData,
+		ResponseBody: result.Body,
+		Source:       "video_task_create:" + task.ID,
+	})
+
+	c.JSON(http.StatusOK, response)
 }
 
 func (s *ProxyService) HandleVideoTaskStatus(c *gin.Context) {
@@ -597,7 +634,19 @@ func (s *ProxyService) HandleVideoTaskStatus(c *gin.Context) {
 		_ = json.Unmarshal([]byte(firstNonEmptyString(task.LastStatusPayload, task.ResponsePayload)), &payload)
 	}
 
-	c.JSON(http.StatusOK, videoTaskResponse(task, payload))
+	response := videoTaskResponse(task, payload)
+	if normalizeVideoTaskStatus(task.Status) == "succeeded" {
+		ApplyGeneratedAssetHook(c.Request.Context(), GeneratedAssetInput{
+			UserID:       user.ID,
+			Kind:         "video",
+			ModelName:    task.ModelName,
+			ResponseData: payload,
+			ResponseBody: []byte(firstNonEmptyString(task.LastStatusPayload, task.ResponsePayload)),
+			Source:       "video_task_status:" + task.ID,
+		})
+	}
+
+	c.JSON(http.StatusOK, response)
 }
 
 func (s *ProxyService) fetchUpstreamVideoTask(c *gin.Context, channel *model.Channel, upstreamTaskID string) (*http.Response, []byte, map[string]interface{}, bool) {

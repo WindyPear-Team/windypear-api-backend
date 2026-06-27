@@ -498,7 +498,7 @@ func Run() error {
 const oidcStateCookie = "flai_oidc_state"
 const oidcReturnCookie = "flai_oidc_return_to"
 const referralCookie = "flai_referral_code"
-const maxRequestBodyBytes int64 = 32 << 20
+const maxRequestBodyBytes int64 = 128 << 20
 
 func requestBodyLimit(maxBytes int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
