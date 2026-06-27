@@ -139,7 +139,7 @@ func TestPrepareOpenAIVideoGenerationRequestRewritesModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareOpenAIVideoGenerationRequest returned error: %v", err)
 	}
-	if request.URL != "https://example.com/v1/videos/generations" {
+	if request.URL != "https://example.com/v1/video/generations" {
 		t.Fatalf("video generation URL = %q", request.URL)
 	}
 	if request.Header.Get("Authorization") != "Bearer upstream-key" {
@@ -215,6 +215,73 @@ func TestCalculatePerCallUsageCost(t *testing.T) {
 	want := decimal.RequireFromString("0.24")
 	if !got.Equal(want) {
 		t.Fatalf("calculateModelUsageCost() = %s, want %s", got.String(), want.String())
+	}
+}
+
+func TestCalculateVideoResolutionDurationCostUsesCombination(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model":    "video-model",
+		"prompt":   "make a pear video",
+		"size":     "720p",
+		"duration": float64(10),
+		"n":        float64(2),
+	}
+	cost, err := calculateVideoBillingCost(requestBody, nil, model.VideoBillingConfig{
+		Resolutions: []model.VideoResolutionPrice{
+			{
+				Resolution: "720p",
+				Durations: []model.VideoDurationPrice{
+					{Seconds: 5, Price: decimal.RequireFromString("0.20")},
+					{Seconds: 10, Price: decimal.RequireFromString("0.35")},
+				},
+			},
+			{
+				Resolution:        "1080p",
+				DurationUnitPrice: decimal.RequireFromString("0.08"),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("calculateVideoBillingCost returned error: %v", err)
+	}
+	want := decimal.RequireFromString("0.70")
+	if !cost.Equal(want) {
+		t.Fatalf("calculateVideoBillingCost() = %s, want %s", cost.String(), want.String())
+	}
+}
+
+func TestCalculateVideoResolutionDurationCostUsesResolutionUnitPrice(t *testing.T) {
+	requestBody := map[string]interface{}{
+		"model":    "video-model",
+		"prompt":   "make a pear video",
+		"size":     "1080p",
+		"duration": float64(6),
+	}
+	cost, err := calculateVideoBillingCost(requestBody, nil, model.VideoBillingConfig{
+		Resolutions: []model.VideoResolutionPrice{{
+			Resolution:        "1080p",
+			DurationUnitPrice: decimal.RequireFromString("0.08"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("calculateVideoBillingCost returned error: %v", err)
+	}
+	want := decimal.RequireFromString("0.48")
+	if !cost.Equal(want) {
+		t.Fatalf("calculateVideoBillingCost() = %s, want %s", cost.String(), want.String())
+	}
+}
+
+func TestVideoTaskPayloadHelpers(t *testing.T) {
+	payload := map[string]interface{}{
+		"task_id": "upstream-123",
+		"state":   "processing",
+	}
+	if got := upstreamTaskIDFromPayload(payload); got != "upstream-123" {
+		t.Fatalf("upstreamTaskIDFromPayload() = %q", got)
+	}
+	if got := videoTaskStatusFromPayload(payload); got != "processing" {
+		t.Fatalf("videoTaskStatusFromPayload() = %q", got)
 	}
 }
 

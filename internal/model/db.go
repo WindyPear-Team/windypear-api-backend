@@ -47,6 +47,7 @@ func InitDB() {
 		&StatusCheck{},
 		&Announcement{},
 		&SystemSetting{},
+		&VideoTask{},
 		&TokenLog{},
 	)
 	if err != nil {

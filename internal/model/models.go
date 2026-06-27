@@ -322,6 +322,26 @@ type SystemSetting struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// VideoTask tracks asynchronous video generation requests.
+type VideoTask struct {
+	ID                string          `gorm:"primaryKey;size:64" json:"id"`
+	UserID            uint            `gorm:"index;not null" json:"user_id"`
+	APIKeyID          *uint           `gorm:"index" json:"api_key_id,omitempty"`
+	UserChannelID     *uint           `gorm:"index" json:"user_channel_id,omitempty"`
+	ChannelID         uint            `gorm:"index;not null" json:"channel_id"`
+	ModelConfigID     uint            `gorm:"index;not null" json:"model_config_id"`
+	ModelName         string          `gorm:"size:100;not null" json:"model_name"`
+	BillingModelName  string          `gorm:"size:100" json:"billing_model_name"`
+	UpstreamTaskID    string          `gorm:"size:255" json:"upstream_task_id"`
+	Status            string          `gorm:"index;size:32;not null" json:"status"`
+	Cost              decimal.Decimal `gorm:"type:decimal(20,10);default:0" json:"cost"`
+	RequestPayload    string          `gorm:"type:text" json:"-"`
+	ResponsePayload   string          `gorm:"type:text" json:"-"`
+	LastStatusPayload string          `gorm:"type:text" json:"-"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
 // TokenLog records every request and its cost
 type TokenLog struct {
 	ID                      uint            `gorm:"primaryKey" json:"id"`

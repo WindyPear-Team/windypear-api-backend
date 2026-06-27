@@ -295,6 +295,12 @@ func Run() error {
 		gateway.POST("/images/generations", proxyService.HandleImageGeneration)
 		gateway.POST("/images/edits", proxyService.HandleImageEdit)
 		gateway.POST("/videos/generations", proxyService.HandleVideoGeneration)
+		gateway.POST("/video/generations", proxyService.HandleVideoTaskCreate)
+		gateway.GET("/video/generations/:id", proxyService.HandleVideoTaskStatus)
+		gateway.POST("/video/tasks", proxyService.HandleVideoTaskCreate)
+		gateway.GET("/video/tasks/:id", proxyService.HandleVideoTaskStatus)
+		gateway.POST("/videos/tasks", proxyService.HandleVideoTaskCreate)
+		gateway.GET("/videos/tasks/:id", proxyService.HandleVideoTaskStatus)
 		gateway.POST("/messages", proxyService.HandleClaudeMessages)
 		gateway.POST("/models/:modelAction", proxyService.HandleGeminiGenerateContent)
 	}

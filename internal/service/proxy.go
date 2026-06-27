@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,6 +125,14 @@ type usageTokenCounts struct {
 	BillableCost            decimal.Decimal
 }
 
+type videoGenerationResult struct {
+	Target       *proxyTarget
+	Response     *http.Response
+	Body         []byte
+	ResponseData map[string]interface{}
+	Cost         decimal.Decimal
+}
+
 func (s *ProxyService) ListModels(c *gin.Context) {
 	var modelNames []string
 	apiKey := currentAPIKey(c)
@@ -169,6 +179,104 @@ func (s *ProxyService) ListModels(c *gin.Context) {
 		Object: "list",
 		Data:   items,
 	})
+}
+
+func (s *ProxyService) createVideoUpstreamGeneration(c *gin.Context, requestBody map[string]interface{}) (videoGenerationResult, bool) {
+	modelName, ok := requestBody["model"].(string)
+	if !ok || strings.TrimSpace(modelName) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Model not specified"})
+		return videoGenerationResult{}, false
+	}
+
+	target, ok := s.resolveTarget(c, modelName)
+	if !ok {
+		return videoGenerationResult{}, false
+	}
+
+	if SensitiveFilterEnabled() {
+		if _, matched := MatchSensitiveWords(videoRequestText(requestBody)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
+			return videoGenerationResult{}, false
+		}
+	}
+
+	upstreamProtocol := channelProtocol(target.Channel.Type)
+	if !supportsOpenAIVideoEndpoint(upstreamProtocol) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Video generation is only supported for OpenAI video upstream channels", "type": "unsupported_upstream"})
+		return videoGenerationResult{}, false
+	}
+
+	if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
+		return videoGenerationResult{}, false
+	}
+
+	prepared, err := prepareOpenAIVideoGenerationRequest(&target.Channel, target.upstreamModelName(), requestBody)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
+		return videoGenerationResult{}, false
+	}
+
+	resp, err := s.doUpstreamRequest(prepared)
+	if err != nil {
+		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return videoGenerationResult{}, false
+	}
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+			return videoGenerationResult{}, false
+		}
+		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, prepared.Body, respBody)
+		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return videoGenerationResult{}, false
+	}
+
+	if isStreamingResponse(resp) {
+		resp.Body.Close()
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported for this endpoint", "type": "unsupported_stream"})
+		return videoGenerationResult{}, false
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+		return videoGenerationResult{}, false
+	}
+
+	var responseData map[string]interface{}
+	_ = json.Unmarshal(respBody, &responseData)
+	if SensitiveFilterEnabled() && SensitiveFilterScope() == SensitiveFilterScopeRequestResponse && responseData != nil {
+		if _, matched := MatchSensitiveWords(videoResponseText(responseData)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Response blocked by content policy", "type": "content_policy"})
+			return videoGenerationResult{}, false
+		}
+	}
+
+	billingModel := target.billingModel()
+	usage, status, message, ok := videoUsageTokenCounts(target.ModelName, requestBody, responseData, billingModel)
+	if !ok {
+		c.JSON(status, gin.H{"error": message, "type": "invalid_request"})
+		return videoGenerationResult{}, false
+	}
+	cost, status, message, err := s.billUsageAndReturnCost(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, billingModel)
+	if err != nil {
+		c.JSON(status, gin.H{"error": message})
+		return videoGenerationResult{}, false
+	}
+
+	return videoGenerationResult{
+		Target:       target,
+		Response:     resp,
+		Body:         respBody,
+		ResponseData: responseData,
+		Cost:         cost,
+	}, true
 }
 
 // HandleRequest handles the incoming API request, routes it to an upstream, and manages billing
@@ -380,92 +488,236 @@ func (s *ProxyService) HandleVideoGeneration(c *gin.Context) {
 		return
 	}
 
-	modelName, ok := requestBody["model"].(string)
-	if !ok || strings.TrimSpace(modelName) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Model not specified"})
-		return
-	}
-
-	target, ok := s.resolveTarget(c, modelName)
+	result, ok := s.createVideoUpstreamGeneration(c, requestBody)
 	if !ok {
 		return
 	}
 
-	if SensitiveFilterEnabled() {
-		if _, matched := MatchSensitiveWords(videoRequestText(requestBody)); matched {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
+	writeUpstreamResponse(c, result.Response, result.Body)
+}
+
+func (s *ProxyService) HandleVideoTaskCreate(c *gin.Context) {
+	requestBody, _, ok := readProxyJSONBody(c)
+	if !ok {
+		return
+	}
+
+	result, ok := s.createVideoUpstreamGeneration(c, requestBody)
+	if !ok {
+		return
+	}
+
+	responsePayload := string(result.Body)
+	taskID := newVideoTaskID()
+	upstreamTaskID := upstreamTaskIDFromPayload(result.ResponseData)
+	status := videoTaskStatusFromPayload(result.ResponseData)
+	if upstreamTaskID == "" {
+		upstreamTaskID = taskID
+	}
+	if status == "" {
+		status = "queued"
+	}
+
+	requestPayload, _ := json.Marshal(requestBody)
+	task := model.VideoTask{
+		ID:                taskID,
+		UserID:            result.Target.User.ID,
+		APIKeyID:          apiKeyID(result.Target.APIKey),
+		UserChannelID:     result.Target.Channel.UserChannelID,
+		ChannelID:         result.Target.Channel.ID,
+		ModelConfigID:     result.Target.ModelConfig.ID,
+		ModelName:         result.Target.ModelName,
+		BillingModelName:  result.Target.billingModelName(),
+		UpstreamTaskID:    upstreamTaskID,
+		Status:            status,
+		Cost:              result.Cost,
+		RequestPayload:    string(requestPayload),
+		ResponsePayload:   responsePayload,
+		LastStatusPayload: responsePayload,
+	}
+	if err := model.DB.Create(&task).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create video task"})
+		return
+	}
+
+	c.JSON(http.StatusOK, videoTaskResponse(task, result.ResponseData))
+}
+
+func (s *ProxyService) HandleVideoTaskStatus(c *gin.Context) {
+	taskID := strings.TrimSpace(c.Param("id"))
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Task id is required"})
+		return
+	}
+	user, ok := currentUserFromContext(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		return
+	}
+
+	var task model.VideoTask
+	if err := model.DB.Where("id = ? AND user_id = ?", taskID, user.ID).First(&task).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Video task not found"})
+		return
+	}
+
+	var payload map[string]interface{}
+	if !terminalVideoTaskStatus(task.Status) && strings.TrimSpace(task.UpstreamTaskID) != "" && task.UpstreamTaskID != task.ID {
+		var channel model.Channel
+		if err := model.DB.First(&channel, task.ChannelID).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load video task channel"})
 			return
 		}
+		if err := ValidateConfiguredHTTPURL(channel.BaseURL); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
+			return
+		}
+		resp, body, statusPayload, ok := s.fetchUpstreamVideoTask(c, &channel, task.UpstreamTaskID)
+		if !ok {
+			return
+		}
+		_ = resp.Body.Close()
+		payload = statusPayload
+		nextStatus := videoTaskStatusFromPayload(statusPayload)
+		if nextStatus == "" {
+			nextStatus = task.Status
+		}
+		updates := map[string]interface{}{
+			"status":              nextStatus,
+			"last_status_payload": string(body),
+		}
+		if err := model.DB.Model(&task).Updates(updates).Error; err == nil {
+			task.Status = nextStatus
+			task.LastStatusPayload = string(body)
+		}
+	} else {
+		_ = json.Unmarshal([]byte(firstNonEmptyString(task.LastStatusPayload, task.ResponsePayload)), &payload)
 	}
 
-	upstreamProtocol := channelProtocol(target.Channel.Type)
-	if !supportsOpenAIVideoEndpoint(upstreamProtocol) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Video generation is only supported for OpenAI video upstream channels", "type": "unsupported_upstream"})
-		return
-	}
+	c.JSON(http.StatusOK, videoTaskResponse(task, payload))
+}
 
-	if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
-		return
+func (s *ProxyService) fetchUpstreamVideoTask(c *gin.Context, channel *model.Channel, upstreamTaskID string) (*http.Response, []byte, map[string]interface{}, bool) {
+	headers := jsonHeaders()
+	headers.Set("Authorization", "Bearer "+strings.TrimSpace(channel.APIKey))
+	prepared := preparedUpstreamRequest{
+		Method: http.MethodGet,
+		URL:    upstreamURLForRequest(channel.BaseURL, "/v1/video/generations/"+url.PathEscape(upstreamTaskID)),
+		Header: headers,
 	}
-
-	prepared, err := prepareOpenAIVideoGenerationRequest(&target.Channel, target.upstreamModelName(), requestBody)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
-		return
-	}
-
 	resp, err := s.doUpstreamRequest(prepared)
 	if err != nil {
-		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, prepared.Body, err)
+		logUpstreamRequestFailure(c, channel, prepared.URL, nil, err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
-		return
+		return nil, nil, nil, false
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= http.StatusBadRequest {
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
-			return
-		}
-		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, prepared.Body, respBody)
-		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
-		return
-	}
-
-	if isStreamingResponse(resp) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported for this endpoint", "type": "unsupported_stream"})
-		return
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		resp.Body.Close()
 		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
-		return
+		return nil, nil, nil, false
 	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		resp.Body.Close()
+		logUpstreamError(c, channel, prepared.URL, resp.StatusCode, nil, body)
+		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return nil, nil, nil, false
+	}
+	var payload map[string]interface{}
+	_ = json.Unmarshal(body, &payload)
+	return resp, body, payload, true
+}
 
-	var responseData map[string]interface{}
-	_ = json.Unmarshal(respBody, &responseData)
-	if SensitiveFilterEnabled() && SensitiveFilterScope() == SensitiveFilterScopeRequestResponse && responseData != nil {
-		if _, matched := MatchSensitiveWords(videoResponseText(responseData)); matched {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Response blocked by content policy", "type": "content_policy"})
-			return
+func videoTaskResponse(task model.VideoTask, payload map[string]interface{}) gin.H {
+	response := gin.H{
+		"id":          task.ID,
+		"object":      "video.generation",
+		"model":       task.ModelName,
+		"status":      task.Status,
+		"cost":        task.Cost,
+		"upstream_id": task.UpstreamTaskID,
+		"created_at":  task.CreatedAt.Unix(),
+		"updated_at":  task.UpdatedAt.Unix(),
+	}
+	if payload != nil {
+		response["upstream_response"] = payload
+		if data, exists := payload["data"]; exists {
+			response["data"] = data
 		}
 	}
+	return response
+}
 
-	billingModel := target.billingModel()
-	usage, status, message, ok := videoUsageTokenCounts(target.ModelName, requestBody, responseData, billingModel)
-	if !ok {
-		c.JSON(status, gin.H{"error": message, "type": "invalid_request"})
-		return
+func upstreamTaskIDFromPayload(payload map[string]interface{}) string {
+	if payload == nil {
+		return ""
 	}
-	if status, message, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, billingModel); err != nil {
-		c.JSON(status, gin.H{"error": message})
-		return
+	if id := firstNonEmptyString(
+		stringFromValue(payload["id"]),
+		stringFromValue(payload["task_id"]),
+		stringFromValue(payload["taskId"]),
+		stringFromValue(payload["generation_id"]),
+		stringFromValue(payload["generationId"]),
+		stringFromValue(payload["request_id"]),
+		stringFromValue(payload["requestId"]),
+	); id != "" {
+		return id
 	}
+	if data, ok := payload["data"].(map[string]interface{}); ok {
+		return upstreamTaskIDFromPayload(data)
+	}
+	return ""
+}
 
-	writeUpstreamResponse(c, resp, respBody)
+func videoTaskStatusFromPayload(payload map[string]interface{}) string {
+	if payload == nil {
+		return ""
+	}
+	status := strings.ToLower(strings.TrimSpace(firstNonEmptyString(
+		stringFromValue(payload["status"]),
+		stringFromValue(payload["state"]),
+		stringFromValue(payload["task_status"]),
+		stringFromValue(payload["taskStatus"]),
+	)))
+	if status != "" {
+		return status
+	}
+	if data, ok := payload["data"].(map[string]interface{}); ok {
+		return videoTaskStatusFromPayload(data)
+	}
+	if _, ok := payload["data"].([]interface{}); ok {
+		return "succeeded"
+	}
+	return ""
+}
+
+func terminalVideoTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "succeeded", "success", "completed", "complete", "done", "failed", "error", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
+}
+
+func currentUserFromContext(c *gin.Context) (*model.User, bool) {
+	if c == nil {
+		return nil, false
+	}
+	value, exists := c.Get("user")
+	if !exists {
+		return nil, false
+	}
+	user, ok := value.(*model.User)
+	return user, ok && user != nil
+}
+
+func newVideoTaskID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("vtask_%d", time.Now().UnixNano())
+	}
+	return "vtask_" + hex.EncodeToString(raw[:])
 }
 
 func (s *ProxyService) HandleClaudeMessages(c *gin.Context) {
@@ -859,9 +1111,14 @@ func (s *ProxyService) handleNonStreamingResponse(c *gin.Context, resp *http.Res
 }
 
 func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (int, string, error) {
+	_, status, message, err := s.billUsageAndReturnCost(c, user, apiKey, channel, modelConfig, modelName, usage, billingModel)
+	return status, message, err
+}
+
+func (s *ProxyService) billUsageAndReturnCost(c *gin.Context, user *model.User, apiKey *model.APIKey, channel *model.Channel, modelConfig *model.ModelConfig, modelName string, usage usageTokenCounts, billingModel model.Model) (decimal.Decimal, int, string, error) {
 	groupMultiplier, err := effectiveUserGroupMultiplier(user, channel.ID, modelConfig.ID)
 	if err != nil {
-		return http.StatusInternalServerError, "User group not found", err
+		return decimal.Zero, http.StatusInternalServerError, "User group not found", err
 	}
 	usage = normalizeUsageTokenCounts(usage)
 
@@ -874,23 +1131,23 @@ func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model
 	// 7. Deduct balance and log
 	tx := model.DB.Begin()
 	if tx.Error != nil {
-		return http.StatusInternalServerError, "Failed to start transaction", tx.Error
+		return decimal.Zero, http.StatusInternalServerError, "Failed to start transaction", tx.Error
 	}
 
 	if exceeded, err := APIKeyQuotaExceededInTx(tx, apiKey, cost); err != nil {
 		tx.Rollback()
-		return http.StatusInternalServerError, "Failed to check API key quota", err
+		return decimal.Zero, http.StatusInternalServerError, "Failed to check API key quota", err
 	} else if exceeded {
 		tx.Rollback()
-		return http.StatusPaymentRequired, "API key quota exceeded", ErrAPIKeyQuotaExceeded
+		return decimal.Zero, http.StatusPaymentRequired, "API key quota exceeded", ErrAPIKeyQuotaExceeded
 	}
 
 	if err := ApplyUsageCharge(tx, user.ID, cost); err != nil {
 		tx.Rollback()
 		if errors.Is(err, ErrInsufficientBalance) {
-			return http.StatusPaymentRequired, "Insufficient balance", err
+			return decimal.Zero, http.StatusPaymentRequired, "Insufficient balance", err
 		}
-		return http.StatusInternalServerError, "Failed to update balance", err
+		return decimal.Zero, http.StatusInternalServerError, "Failed to update balance", err
 	}
 
 	tokenLog := model.TokenLog{
@@ -915,17 +1172,17 @@ func (s *ProxyService) billUsage(c *gin.Context, user *model.User, apiKey *model
 	}
 	if err := tx.Create(&tokenLog).Error; err != nil {
 		tx.Rollback()
-		return http.StatusInternalServerError, "Failed to log usage", err
+		return decimal.Zero, http.StatusInternalServerError, "Failed to log usage", err
 	}
 	if err := applyReferralCommission(tx, user, tokenLog.ID, cost); err != nil {
 		tx.Rollback()
-		return http.StatusInternalServerError, "Failed to apply referral commission", err
+		return decimal.Zero, http.StatusInternalServerError, "Failed to apply referral commission", err
 	}
 	if err := tx.Commit().Error; err != nil {
-		return http.StatusInternalServerError, "Failed to commit usage", err
+		return decimal.Zero, http.StatusInternalServerError, "Failed to commit usage", err
 	}
 
-	return 0, "", nil
+	return cost, 0, "", nil
 }
 
 func calculateModelUsageCost(usage usageTokenCounts, modelConfig model.Model) decimal.Decimal {
@@ -1593,7 +1850,7 @@ func prepareOpenAIVideoGenerationRequest(channel *model.Channel, upstreamModelNa
 	headers.Set("Authorization", "Bearer "+strings.TrimSpace(channel.APIKey))
 	return preparedUpstreamRequest{
 		Method: http.MethodPost,
-		URL:    upstreamURLForRequest(channel.BaseURL, "/v1/videos/generations"),
+		URL:    upstreamURLForRequest(channel.BaseURL, "/v1/video/generations"),
 		Body:   body,
 		Header: headers,
 	}, nil
