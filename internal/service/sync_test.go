@@ -139,6 +139,42 @@ func TestParseUpstreamPriceItemsSplitQuotaTypes(t *testing.T) {
 	assertCachedPrice(t, prices, "video-model", "0")
 }
 
+func TestMultiplyTokenPricedModelPricesSkipsPerCallPrices(t *testing.T) {
+	items := multiplyTokenPricedModelPrices([]upstreamModelPrice{
+		{
+			Model:                 "chat-model",
+			QuotaType:             0,
+			InputPrice:            decimal.RequireFromString("1"),
+			OutputPrice:           decimal.RequireFromString("2"),
+			CachedInputPrice:      decimal.RequireFromString("0.5"),
+			OutputPriceTiers:      model.PriceTierList{{MinTokens: 1, Price: decimal.RequireFromString("0.2")}},
+			CachedInputPriceTiers: model.PriceTierList{{MinTokens: 1, Price: decimal.RequireFromString("0.1")}},
+		},
+		{
+			Model:            "video-model",
+			QuotaType:        1,
+			OutputPrice:      decimal.RequireFromString("0.12"),
+			OutputPriceTiers: model.PriceTierList{{MinTokens: 1, Price: decimal.RequireFromString("0.2")}},
+		},
+	})
+
+	if len(items) != 2 {
+		t.Fatalf("item count = %d, want 2", len(items))
+	}
+	assertDecimalString(t, items[0].InputPrice, "2")
+	assertDecimalString(t, items[0].OutputPrice, "4")
+	assertDecimalString(t, items[0].CachedInputPrice, "1")
+	assertTier(t, items[0].OutputPriceTiers, 1, "0.4")
+	assertTier(t, items[0].CachedInputPriceTiers, 1, "0.2")
+
+	if items[1].QuotaType != 1 {
+		t.Fatalf("quota type = %d, want 1", items[1].QuotaType)
+	}
+	assertDecimalString(t, items[1].InputPrice, "0")
+	assertDecimalString(t, items[1].OutputPrice, "0.12")
+	assertTier(t, items[1].OutputPriceTiers, 1, "0.2")
+}
+
 func TestParseUpstreamPriceItemsNewAPITieredExpression(t *testing.T) {
 	body := []byte(`{
 		"success": true,

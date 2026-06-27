@@ -1981,6 +1981,43 @@ func (api *ModelAPI) Pricing(c *gin.Context) {
 		effectiveAudioInputTiers := model.MultiplyPriceTiers(baseAudioInputTiers, userChannel.Multiplier)
 		effectiveAudioOutputTiers := model.MultiplyPriceTiers(baseAudioOutputTiers, userChannel.Multiplier)
 
+		baseInput = exposedPricingDecimal(baseInput, baseQuotaType)
+		baseOutput = exposedPricingDecimal(baseOutput, baseQuotaType)
+		baseCachedInput = exposedPricingDecimal(baseCachedInput, baseQuotaType)
+		baseCacheWriteInput = exposedPricingDecimal(baseCacheWriteInput, baseQuotaType)
+		baseCacheWrite1hInput = exposedPricingDecimal(baseCacheWrite1hInput, baseQuotaType)
+		baseImageInput = exposedPricingDecimal(baseImageInput, baseQuotaType)
+		baseImageOutput = exposedPricingDecimal(baseImageOutput, baseQuotaType)
+		baseAudioInput = exposedPricingDecimal(baseAudioInput, baseQuotaType)
+		baseAudioOutput = exposedPricingDecimal(baseAudioOutput, baseQuotaType)
+		baseInputTiers = exposedPricingTiers(baseInputTiers, baseQuotaType)
+		baseOutputTiers = exposedPricingTiers(baseOutputTiers, baseQuotaType)
+		baseCachedInputTiers = exposedPricingTiers(baseCachedInputTiers, baseQuotaType)
+		baseCacheWriteInputTiers = exposedPricingTiers(baseCacheWriteInputTiers, baseQuotaType)
+		baseCacheWrite1hInputTiers = exposedPricingTiers(baseCacheWrite1hInputTiers, baseQuotaType)
+		baseImageInputTiers = exposedPricingTiers(baseImageInputTiers, baseQuotaType)
+		baseImageOutputTiers = exposedPricingTiers(baseImageOutputTiers, baseQuotaType)
+		baseAudioInputTiers = exposedPricingTiers(baseAudioInputTiers, baseQuotaType)
+		baseAudioOutputTiers = exposedPricingTiers(baseAudioOutputTiers, baseQuotaType)
+		effectiveInput = exposedPricingDecimal(effectiveInput, baseQuotaType)
+		effectiveOutput = exposedPricingDecimal(effectiveOutput, baseQuotaType)
+		effectiveCachedInput = exposedPricingDecimal(effectiveCachedInput, baseQuotaType)
+		effectiveCacheWriteInput = exposedPricingDecimal(effectiveCacheWriteInput, baseQuotaType)
+		effectiveCacheWrite1hInput = exposedPricingDecimal(effectiveCacheWrite1hInput, baseQuotaType)
+		effectiveImageInput = exposedPricingDecimal(effectiveImageInput, baseQuotaType)
+		effectiveImageOutput = exposedPricingDecimal(effectiveImageOutput, baseQuotaType)
+		effectiveAudioInput = exposedPricingDecimal(effectiveAudioInput, baseQuotaType)
+		effectiveAudioOutput = exposedPricingDecimal(effectiveAudioOutput, baseQuotaType)
+		effectiveInputTiers = exposedPricingTiers(effectiveInputTiers, baseQuotaType)
+		effectiveOutputTiers = exposedPricingTiers(effectiveOutputTiers, baseQuotaType)
+		effectiveCachedInputTiers = exposedPricingTiers(effectiveCachedInputTiers, baseQuotaType)
+		effectiveCacheWriteInputTiers = exposedPricingTiers(effectiveCacheWriteInputTiers, baseQuotaType)
+		effectiveCacheWrite1hInputTiers = exposedPricingTiers(effectiveCacheWrite1hInputTiers, baseQuotaType)
+		effectiveImageInputTiers = exposedPricingTiers(effectiveImageInputTiers, baseQuotaType)
+		effectiveImageOutputTiers = exposedPricingTiers(effectiveImageOutputTiers, baseQuotaType)
+		effectiveAudioInputTiers = exposedPricingTiers(effectiveAudioInputTiers, baseQuotaType)
+		effectiveAudioOutputTiers = exposedPricingTiers(effectiveAudioOutputTiers, baseQuotaType)
+
 		setMinDecimalWithTiers(data.BaseInputPrice, data.BaseInputPriceTiers, modelName, baseInput, baseInputTiers)
 		setMinDecimalWithTiers(data.BaseOutputPrice, data.BaseOutputPriceTiers, modelName, baseOutput, baseOutputTiers)
 		setMinDecimalWithTiers(data.BaseCachedInputPrice, data.BaseCachedInputPriceTiers, modelName, baseCachedInput, baseCachedInputTiers)
@@ -2076,6 +2113,20 @@ func setMinDecimalWithTiers(values map[string]decimal.Decimal, tiers map[string]
 		values[key] = value
 		tiers[key] = model.NormalizePriceTiers(priceTiers)
 	}
+}
+
+func exposedPricingDecimal(value decimal.Decimal, quotaType int) decimal.Decimal {
+	if normalizeQuotaType(quotaType) == 1 {
+		return value
+	}
+	return value.Div(decimal.NewFromInt(2))
+}
+
+func exposedPricingTiers(tiers model.PriceTierList, quotaType int) model.PriceTierList {
+	if normalizeQuotaType(quotaType) == 1 {
+		return model.NormalizePriceTiers(tiers)
+	}
+	return model.MultiplyPriceTiers(tiers, decimal.RequireFromString("0.5"))
 }
 
 func copyDecimalMap(values map[string]decimal.Decimal) map[string]decimal.Decimal {

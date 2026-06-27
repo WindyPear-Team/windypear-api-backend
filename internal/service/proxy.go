@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"sort"
@@ -244,6 +245,100 @@ func (s *ProxyService) HandleImageGeneration(c *gin.Context) {
 			return
 		}
 		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, prepared.Body, respBody)
+		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return
+	}
+
+	if isStreamingResponse(resp) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Streaming is not supported for this endpoint", "type": "unsupported_stream"})
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+		return
+	}
+
+	var responseData map[string]interface{}
+	_ = json.Unmarshal(respBody, &responseData)
+	if SensitiveFilterEnabled() && SensitiveFilterScope() == SensitiveFilterScopeRequestResponse && responseData != nil {
+		if _, matched := MatchSensitiveWords(imageResponseText(responseData)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Response blocked by content policy", "type": "content_policy"})
+			return
+		}
+	}
+
+	usage := imageUsageTokenCounts(target.ModelName, requestBody, responseData)
+	if status, message, err := s.billUsage(c, target.User, target.APIKey, &target.Channel, &target.ModelConfig, target.billingModelName(), usage, target.billingModel()); err != nil {
+		c.JSON(status, gin.H{"error": message})
+		return
+	}
+
+	writeUpstreamResponse(c, resp, respBody)
+}
+
+func (s *ProxyService) HandleImageEdit(c *gin.Context) {
+	if err := c.Request.ParseMultipartForm(128 << 20); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid multipart form", "type": "invalid_request"})
+		return
+	}
+	if c.Request.MultipartForm == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Multipart form is required", "type": "invalid_request"})
+		return
+	}
+
+	modelName := strings.TrimSpace(c.PostForm("model"))
+	if modelName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Model not specified"})
+		return
+	}
+
+	target, ok := s.resolveTarget(c, modelName)
+	if !ok {
+		return
+	}
+
+	requestBody := multipartFormValues(c.Request.MultipartForm)
+	if SensitiveFilterEnabled() {
+		if _, matched := MatchSensitiveWords(imageRequestText(requestBody)); matched {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Request blocked by content policy", "type": "content_policy"})
+			return
+		}
+	}
+
+	upstreamProtocol := channelProtocol(target.Channel.Type)
+	if !supportsOpenAIImageEndpoint(upstreamProtocol) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Image editing is only supported for OpenAI-compatible upstream channels", "type": "unsupported_upstream"})
+		return
+	}
+
+	if err := ValidateConfiguredHTTPURL(target.Channel.BaseURL); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream URL blocked by SSRF protection", "type": "upstream_error"})
+		return
+	}
+
+	prepared, err := prepareOpenAIImageEditRequest(&target.Channel, target.upstreamModelName(), c.Request.MultipartForm)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "type": "invalid_request"})
+		return
+	}
+
+	resp, err := s.doUpstreamRequest(prepared)
+	if err != nil {
+		logUpstreamRequestFailure(c, &target.Channel, prepared.URL, nil, err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= http.StatusBadRequest {
+		respBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to read upstream response"})
+			return
+		}
+		logUpstreamError(c, &target.Channel, prepared.URL, resp.StatusCode, nil, respBody)
 		c.JSON(resp.StatusCode, gin.H{"error": "Upstream request failed", "type": "upstream_error"})
 		return
 	}
@@ -1405,6 +1500,67 @@ func prepareOpenAIImageGenerationRequest(channel *model.Channel, upstreamModelNa
 	}, nil
 }
 
+func prepareOpenAIImageEditRequest(channel *model.Channel, upstreamModelName string, form *multipart.Form) (preparedUpstreamRequest, error) {
+	upstreamModelName = strings.TrimSpace(upstreamModelName)
+	if upstreamModelName == "" {
+		return preparedUpstreamRequest{}, errors.New("model is required")
+	}
+	if form == nil {
+		return preparedUpstreamRequest{}, errors.New("multipart form is required")
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, values := range form.Value {
+		if key == "model" {
+			continue
+		}
+		for _, value := range values {
+			if err := writer.WriteField(key, value); err != nil {
+				return preparedUpstreamRequest{}, err
+			}
+		}
+	}
+	if err := writer.WriteField("model", upstreamModelName); err != nil {
+		return preparedUpstreamRequest{}, err
+	}
+	for key, files := range form.File {
+		for _, fileHeader := range files {
+			source, err := fileHeader.Open()
+			if err != nil {
+				return preparedUpstreamRequest{}, err
+			}
+			part, err := writer.CreateFormFile(key, fileHeader.Filename)
+			if err != nil {
+				source.Close()
+				return preparedUpstreamRequest{}, err
+			}
+			if _, err := io.Copy(part, source); err != nil {
+				source.Close()
+				return preparedUpstreamRequest{}, err
+			}
+			source.Close()
+		}
+	}
+	if len(form.File["image"]) == 0 {
+		return preparedUpstreamRequest{}, errors.New("image is required")
+	}
+	if err := writer.Close(); err != nil {
+		return preparedUpstreamRequest{}, err
+	}
+
+	headers := http.Header{}
+	headers.Set("Content-Type", writer.FormDataContentType())
+	headers.Set("Accept", "application/json")
+	headers.Set("Authorization", "Bearer "+strings.TrimSpace(channel.APIKey))
+	return preparedUpstreamRequest{
+		Method: http.MethodPost,
+		URL:    upstreamURLForRequest(channel.BaseURL, "/v1/images/edits"),
+		Body:   body.Bytes(),
+		Header: headers,
+	}, nil
+}
+
 func prepareOpenAIVideoGenerationRequest(channel *model.Channel, upstreamModelName string, requestBody map[string]interface{}) (preparedUpstreamRequest, error) {
 	upstreamModelName = strings.TrimSpace(upstreamModelName)
 	if upstreamModelName == "" {
@@ -2076,6 +2232,25 @@ func imageCountFromPayloads(requestBody map[string]interface{}, responseData map
 		}
 	}
 	return 1
+}
+
+func multipartFormValues(form *multipart.Form) map[string]interface{} {
+	values := map[string]interface{}{}
+	if form == nil {
+		return values
+	}
+	for key, items := range form.Value {
+		if len(items) == 1 {
+			values[key] = items[0]
+			continue
+		}
+		copied := make([]interface{}, 0, len(items))
+		for _, item := range items {
+			copied = append(copied, item)
+		}
+		values[key] = copied
+	}
+	return values
 }
 
 func imageRequestText(requestBody map[string]interface{}) string {

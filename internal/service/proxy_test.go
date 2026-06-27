@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"testing"
@@ -78,6 +80,50 @@ func TestPrepareOpenAIImageGenerationRequestRewritesModel(t *testing.T) {
 	}
 	if payload["prompt"] != "draw a pear" {
 		t.Fatalf("prepared prompt was not preserved")
+	}
+}
+
+func TestPrepareOpenAIImageEditRequestRewritesModel(t *testing.T) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("model", "gpt-image-1"); err != nil {
+		t.Fatalf("failed to write model field: %v", err)
+	}
+	if err := writer.WriteField("prompt", "add a pear"); err != nil {
+		t.Fatalf("failed to write prompt field: %v", err)
+	}
+	part, err := writer.CreateFormFile("image", "input.png")
+	if err != nil {
+		t.Fatalf("failed to create image part: %v", err)
+	}
+	if _, err := part.Write([]byte("fake image")); err != nil {
+		t.Fatalf("failed to write image part: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("failed to close multipart writer: %v", err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(body.Bytes()), strings.TrimPrefix(writer.FormDataContentType(), "multipart/form-data; boundary="))
+	form, err := reader.ReadForm(1024)
+	if err != nil {
+		t.Fatalf("failed to parse multipart form: %v", err)
+	}
+	channel := &model.Channel{BaseURL: "https://example.com/v1", APIKey: "upstream-key"}
+
+	request, err := prepareOpenAIImageEditRequest(channel, "upstream-image-model", form)
+	if err != nil {
+		t.Fatalf("prepareOpenAIImageEditRequest returned error: %v", err)
+	}
+	if request.URL != "https://example.com/v1/images/edits" {
+		t.Fatalf("image edit URL = %q", request.URL)
+	}
+	if request.Header.Get("Authorization") != "Bearer upstream-key" {
+		t.Fatalf("Authorization was not set from channel key")
+	}
+	if !strings.Contains(string(request.Body), `name="model"`) || !strings.Contains(string(request.Body), "upstream-image-model") {
+		t.Fatalf("prepared multipart body did not include rewritten model")
+	}
+	if !strings.Contains(string(request.Body), `name="image"; filename="input.png"`) {
+		t.Fatalf("prepared multipart body did not include image file")
 	}
 }
 

@@ -295,12 +295,13 @@ func (s *SyncService) PreviewGlobalModelPrices(channelID uint, options ModelSync
 		return ModelSyncPreview{}, err
 	}
 
-	items, source, err := s.fetchUpstreamModelPrices(&channel, options)
+	items, err := s.fetchNewAPICompatiblePrices(&channel)
 	if err != nil {
 		return ModelSyncPreview{}, err
 	}
+	items = multiplyTokenPricedModelPrices(items)
 
-	return s.buildGlobalPriceSyncPreview(&channel, source, items)
+	return s.buildGlobalPriceSyncPreview(&channel, "/api/pricing", items)
 }
 
 func (s *SyncService) PreviewGlobalModelPricesFromBody(channelID uint, source string, body []byte) (ModelSyncPreview, error) {
@@ -316,6 +317,7 @@ func (s *SyncService) PreviewGlobalModelPricesFromBody(channelID uint, source st
 	if strings.TrimSpace(source) == "" {
 		source = "browser"
 	}
+	items = multiplyTokenPricedModelPrices(items)
 	return s.buildGlobalPriceSyncPreview(&channel, source, items)
 }
 
@@ -1328,6 +1330,25 @@ func normalizeQuotaType(value int) int {
 		return 1
 	}
 	return 0
+}
+
+func multiplyTokenPricedModelPrices(items []upstreamModelPrice) []upstreamModelPrice {
+	multiplier := decimal.NewFromInt(2)
+	result := make([]upstreamModelPrice, len(items))
+	for index, item := range items {
+		if normalizeQuotaType(item.QuotaType) == 1 {
+			result[index] = item
+			continue
+		}
+		item.InputPrice = item.InputPrice.Mul(multiplier)
+		item.OutputPrice = item.OutputPrice.Mul(multiplier)
+		item.CachedInputPrice = item.CachedInputPrice.Mul(multiplier)
+		item.InputPriceTiers = model.MultiplyPriceTiers(item.InputPriceTiers, multiplier)
+		item.OutputPriceTiers = model.MultiplyPriceTiers(item.OutputPriceTiers, multiplier)
+		item.CachedInputPriceTiers = model.MultiplyPriceTiers(item.CachedInputPriceTiers, multiplier)
+		result[index] = item
+	}
+	return result
 }
 
 func normalizeEndpointType(value string) string {
