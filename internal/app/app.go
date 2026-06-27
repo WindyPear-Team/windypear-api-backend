@@ -312,6 +312,7 @@ func Run() error {
 		gateway.POST("/videos/generations", proxyService.HandleVideoGenerationCompatible)
 		gateway.GET("/videos/generations/:id", proxyService.HandleUnifiedTaskStatus)
 		gateway.POST("/videos/:id/remix", proxyService.HandleVideoRemix)
+		gateway.POST("/seedance2/private-avatar", proxyService.HandleSeedancePrivateAvatar)
 		gateway.POST("/video/generations", proxyService.HandleVideoTaskCreate)
 		gateway.GET("/video/generations/:id", proxyService.HandleVideoTaskStatus)
 		gateway.POST("/videos/image2video", proxyService.HandleVideoTaskCreate)

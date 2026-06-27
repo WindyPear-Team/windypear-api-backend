@@ -127,6 +127,17 @@ func (s *ProxyService) HandleVideoRemix(c *gin.Context) {
 	})
 }
 
+func (s *ProxyService) HandleSeedancePrivateAvatar(c *gin.Context) {
+	s.handleCompatibleJSONGeneration(c, compatibleGenerationOptions{
+		Kind:         taskKindVideo,
+		DefaultModel: "doubao-seedance-2.0",
+		UpstreamPath: "/v1/seedance2/private-avatar",
+		EstimateUsage: func(target *proxyTarget, requestBody map[string]interface{}, responseData map[string]interface{}) (usageTokenCounts, int, string, bool) {
+			return videoUsageTokenCounts(target.ModelName, requestBody, responseData, target.billingModel())
+		},
+	})
+}
+
 func (s *ProxyService) HandleMidjourneyCreate(c *gin.Context) {
 	path := c.Request.URL.Path
 	if strings.TrimSpace(path) == "" {

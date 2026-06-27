@@ -2066,8 +2066,10 @@ func channelProtocol(channelType string) proxyProtocol {
 		return protocolOpenAI
 	case "responses", "response", "openai_responses":
 		return protocolResponses
-	case "openai-video", "openai_video", "video":
+	case "openai-video", "openai_video", "video", "veo", "seedance":
 		return protocolOpenAIVideo
+	case "seedream":
+		return protocolOpenAI
 	case "kling", "klingai", "kling_ai":
 		return protocolKling
 	case "midjourney", "mj":
