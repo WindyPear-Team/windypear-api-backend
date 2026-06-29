@@ -116,6 +116,7 @@ func advancedChatPremiumSettingRequested(input advancedChatAdminSettingsInput) b
 		boolPtrTrue(input.FileStorageAutoSaveImagesEnabled) ||
 		boolPtrTrue(input.FileStorageAutoSaveVideosEnabled) ||
 		boolPtrTrue(input.ScheduledTasksEnabled) ||
+		boolPtrTrue(input.MessageChannelEnabled) ||
 		boolPtrTrue(input.MessageDeliveryEnabled) ||
 		boolPtrTrue(input.DeliverySystemSMTPEnabled)
 }

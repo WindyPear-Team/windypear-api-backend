@@ -81,6 +81,7 @@ type advancedChatAdminSettingsResponse struct {
 	AssistantConnectorRunCommandEnabled  bool                    `json:"assistant_connector_run_command_enabled"`
 	AssistantConnectorWebSearchEnabled   bool                    `json:"assistant_connector_web_search_enabled"`
 	ScheduledTasksEnabled                bool                    `json:"scheduled_tasks_enabled"`
+	MessageChannelEnabled                bool                    `json:"message_channel_enabled"`
 	MessageDeliveryEnabled               bool                    `json:"message_delivery_enabled"`
 	DeliverySystemSMTPEnabled            bool                    `json:"delivery_system_smtp_enabled"`
 }
@@ -126,6 +127,7 @@ type advancedChatAdminSettingsInput struct {
 	AssistantConnectorRunCommandEnabled  *bool                   `json:"assistant_connector_run_command_enabled"`
 	AssistantConnectorWebSearchEnabled   *bool                   `json:"assistant_connector_web_search_enabled"`
 	ScheduledTasksEnabled                *bool                   `json:"scheduled_tasks_enabled"`
+	MessageChannelEnabled                *bool                   `json:"message_channel_enabled"`
 	MessageDeliveryEnabled               *bool                   `json:"message_delivery_enabled"`
 	DeliverySystemSMTPEnabled            *bool                   `json:"delivery_system_smtp_enabled"`
 }
@@ -158,6 +160,7 @@ const (
 	advancedChatAssistantConnectorRunCommandEnabledKey  = "advanced_chat_assistant_connector_run_command_enabled"
 	advancedChatAssistantConnectorWebSearchEnabledKey   = "advanced_chat_assistant_connector_web_search_enabled"
 	advancedChatScheduledTasksEnabledKey                = "advanced_chat_scheduled_tasks_enabled"
+	advancedChatMessageChannelEnabledKey                = "message_channel_enabled"
 	advancedChatMessageDeliveryEnabledKey               = "advanced_chat_message_delivery_enabled"
 	advancedChatDeliverySystemSMTPEnabledKey            = "advanced_chat_delivery_system_smtp_enabled"
 	advancedChatDefaultAttachmentMaxMB                  = 10
@@ -318,6 +321,7 @@ func (api *advancedChatAPI) updateAdminSettings(c *gin.Context) {
 		advancedChatAssistantConnectorRunCommandEnabledKey:  input.AssistantConnectorRunCommandEnabled,
 		advancedChatAssistantConnectorWebSearchEnabledKey:   input.AssistantConnectorWebSearchEnabled,
 		advancedChatScheduledTasksEnabledKey:                input.ScheduledTasksEnabled,
+		advancedChatMessageChannelEnabledKey:                input.MessageChannelEnabled,
 		advancedChatMessageDeliveryEnabledKey:               input.MessageDeliveryEnabled,
 		advancedChatDeliverySystemSMTPEnabledKey:            input.DeliverySystemSMTPEnabled,
 	}
@@ -717,6 +721,7 @@ func currentAdvancedChatAdminSettings() advancedChatAdminSettingsResponse {
 		AssistantConnectorRunCommandEnabled:  advancedChatAssistantConnectorRunCommandEnabled(),
 		AssistantConnectorWebSearchEnabled:   advancedChatAssistantConnectorWebSearchEnabled(),
 		ScheduledTasksEnabled:                advancedChatScheduledTasksEnabled(),
+		MessageChannelEnabled:                advancedChatMessageChannelEnabled(),
 		MessageDeliveryEnabled:               advancedChatMessageDeliveryEnabled(),
 		DeliverySystemSMTPEnabled:            advancedChatDeliverySystemSMTPEnabled(),
 	}
@@ -725,6 +730,7 @@ func currentAdvancedChatAdminSettings() advancedChatAdminSettingsResponse {
 		settings.FileStorageAutoSaveImagesEnabled = false
 		settings.FileStorageAutoSaveVideosEnabled = false
 		settings.ScheduledTasksEnabled = false
+		settings.MessageChannelEnabled = false
 		settings.MessageDeliveryEnabled = false
 		settings.DeliverySystemSMTPEnabled = false
 	}
@@ -840,6 +846,13 @@ func advancedChatScheduledTasksEnabled() bool {
 		return false
 	}
 	return advancedChatSettingBool(advancedChatScheduledTasksEnabledKey, true)
+}
+
+func advancedChatMessageChannelEnabled() bool {
+	if !advancedChatPremiumFeaturesAvailable() {
+		return false
+	}
+	return advancedChatSettingBool(advancedChatMessageChannelEnabledKey, false)
 }
 
 func advancedChatMessageDeliveryEnabled() bool {
