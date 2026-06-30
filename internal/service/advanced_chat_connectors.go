@@ -745,8 +745,8 @@ func loadAdvancedChatConnectorForSession(userID uint, deviceID string, workspace
 	if deviceID == "" && workspacePath == "" {
 		return nil, "", nil
 	}
-	if deviceID == "" || workspacePath == "" {
-		return nil, "", errors.New("connector device and workspace are both required")
+	if deviceID == "" {
+		return nil, "", errors.New("connector device is required")
 	}
 	var device AdvancedChatConnectorDevice
 	if err := model.DB.Where("id = ? AND user_id = ?", deviceID, userID).First(&device).Error; err != nil {
@@ -1195,7 +1195,7 @@ func expandAdvancedChatConnectorToolArguments(binding advancedChatConnectorToolB
 
 func advancedChatConnectorTaskRequiresApproval(binding advancedChatConnectorToolBinding, arguments map[string]interface{}) bool {
 	switch binding.Action {
-	case "list_files", "read_file", "web_search", "web_fetch", "list_agent_skills", "list_windows_drives":
+	case "list_files", "read_file", "web_search", "web_fetch", "list_agent_skills", "list_windows_drives", "list_agent_groups", "read_agent_group", "write_agent_group", "delete_agent_group":
 		return false
 	case "run_command":
 		command, _ := arguments["command"].(string)

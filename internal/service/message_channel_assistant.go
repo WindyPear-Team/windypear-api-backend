@@ -69,7 +69,17 @@ func ExecuteMessageChannelAssistantCompletion(user *model.User, req MessageChann
 			return nil, err
 		}
 	}
+	agentGroups := []advancedChatAgentGroup{}
+	if device != nil {
+		if loaded, loadErr := loadAdvancedChatAgentGroupsForRun(ctx, user.ID, device); loadErr == nil {
+			agentGroups = loaded
+		}
+	}
 	tools, connectorBindings := advancedChatConnectorTools(device, workspacePath, req.ConnectorAutoApprove, req.ConnectorCommandPrefixes)
+	connectorTools := append([]ChatExecutorTool{}, tools...)
+	if len(agentGroups) > 0 {
+		tools = append(tools, advancedChatAgentDelegateTool(agentGroups))
+	}
 	if len(tools) == 0 {
 		return nil, errors.New("no workspace tools are available for this message channel")
 	}
@@ -79,6 +89,9 @@ func ExecuteMessageChannelAssistantCompletion(user *model.User, req MessageChann
 		systemParts = append(systemParts, system)
 	}
 	if prompt := buildAdvancedChatCompletionSystemPrompt(nil, nil, workspaceSkills, advancedChatModeAssistant); strings.TrimSpace(prompt) != "" {
+		systemParts = append(systemParts, prompt)
+	}
+	if prompt := advancedChatAgentGroupSystemPrompt(agentGroups); strings.TrimSpace(prompt) != "" {
 		systemParts = append(systemParts, prompt)
 	}
 	if prompt := advancedChatConnectorSystemPrompt(device, workspacePath); strings.TrimSpace(prompt) != "" {
@@ -126,6 +139,7 @@ func ExecuteMessageChannelAssistantCompletion(user *model.User, req MessageChann
 		for _, toolCall := range result.ToolCalls {
 			toolResultText := "Tool not found: " + toolCall.Name
 			binding, exists := connectorBindings[toolCall.Name]
+			agentDelegateExists := toolCall.Name == advancedChatAgentDelegateToolName && len(agentGroups) > 0
 			arguments, argumentsErr := parseToolArguments(toolCall.Arguments)
 			if exists {
 				if argumentsErr != nil {
@@ -165,6 +179,30 @@ func ExecuteMessageChannelAssistantCompletion(user *model.User, req MessageChann
 						if strings.TrimSpace(toolResult) != "" {
 							toolResultText = strings.TrimSpace(toolResult) + "\n\n" + toolResultText
 						}
+					} else {
+						toolResultText = toolResult
+					}
+				}
+			} else if agentDelegateExists {
+				if argumentsErr != nil {
+					toolResultText = "Invalid delegation arguments: " + argumentsErr.Error()
+				} else {
+					toolResult, err := executeAdvancedChatAgentDelegate(ctx, user, advancedChatAgentDelegateInput{
+						UserID:             user.ID,
+						RunID:              req.RunID,
+						ModelName:          req.ModelName,
+						UserChannelID:      req.UserChannelID,
+						Messages:           executorMessages,
+						WorkspaceSkills:    workspaceSkills,
+						ConnectorDevice:    device,
+						ConnectorWorkspace: workspacePath,
+						ConnectorBindings:  connectorBindings,
+						ConnectorTools:     connectorTools,
+						Groups:             agentGroups,
+						Arguments:          arguments,
+					})
+					if err != nil {
+						toolResultText = "Delegated agent failed: " + err.Error()
 					} else {
 						toolResultText = toolResult
 					}

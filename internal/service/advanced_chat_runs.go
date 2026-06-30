@@ -191,6 +191,7 @@ type preparedAdvancedChatAssistantRun struct {
 	agent                    *AdvancedChatAgent
 	skills                   []AdvancedChatSkill
 	workspaceSkills          []advancedChatWorkspaceSkill
+	agentGroups              []advancedChatAgentGroup
 	servers                  []AdvancedChatMCPServer
 	connectorDevice          *AdvancedChatConnectorDevice
 	connectorWorkspace       string
@@ -500,6 +501,12 @@ func prepareAdvancedChatAssistantRun(ctx context.Context, userID uint, input adv
 			return preparedAdvancedChatAssistantRun{}, http.StatusBadRequest, err.Error(), err
 		}
 	}
+	agentGroups := []advancedChatAgentGroup{}
+	if connectorDevice != nil {
+		if loaded, loadErr := loadAdvancedChatAgentGroupsForRun(ctx, userID, connectorDevice); loadErr == nil {
+			agentGroups = loaded
+		}
+	}
 	input.ConnectorDeviceID = strings.TrimSpace(input.ConnectorDeviceID)
 	input.ConnectorWorkspacePath = connectorWorkspace
 	input.ConnectorCommandPrefixes = normalizeConnectorCommandPrefixes(input.ConnectorCommandPrefixes)
@@ -514,6 +521,7 @@ func prepareAdvancedChatAssistantRun(ctx context.Context, userID uint, input adv
 		agent:                    agent,
 		skills:                   skills,
 		workspaceSkills:          workspaceSkills,
+		agentGroups:              agentGroups,
 		servers:                  servers,
 		connectorDevice:          connectorDevice,
 		connectorWorkspace:       connectorWorkspace,
@@ -1016,12 +1024,22 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 	if len(connectorTools) > 0 {
 		tools = append(tools, connectorTools...)
 	}
+	if len(prepared.agentGroups) > 0 {
+		tools = append(tools, advancedChatAgentDelegateTool(prepared.agentGroups))
+	}
 	deliveryToolName := ""
 	if prepared.delivery != nil {
 		deliveryToolName = "deliver_result"
 		tools = append(tools, advancedChatDeliveryTool(deliveryToolName))
 	}
 	systemPrompt := buildAdvancedChatCompletionSystemPrompt(prepared.agent, prepared.skills, prepared.workspaceSkills, prepared.mode)
+	if agentGroupPrompt := advancedChatAgentGroupSystemPrompt(prepared.agentGroups); agentGroupPrompt != "" {
+		if strings.TrimSpace(systemPrompt) == "" {
+			systemPrompt = agentGroupPrompt
+		} else {
+			systemPrompt = strings.Join([]string{systemPrompt, agentGroupPrompt}, "\n\n")
+		}
+	}
 	if connectorPrompt := advancedChatConnectorSystemPrompt(prepared.connectorDevice, prepared.connectorWorkspace); connectorPrompt != "" {
 		if strings.TrimSpace(systemPrompt) == "" {
 			systemPrompt = connectorPrompt
@@ -1109,6 +1127,7 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 			binding, exists := bindings[toolCall.Name]
 			connectorBinding, connectorExists := connectorBindings[toolCall.Name]
 			deliveryExists := prepared.delivery != nil && toolCall.Name == deliveryToolName
+			agentDelegateExists := toolCall.Name == advancedChatAgentDelegateToolName && len(prepared.agentGroups) > 0
 			detail := advancedChatCompletionToolCall{ID: toolCall.ID, Round: round + 1, Name: toolCall.Name, Status: "running"}
 			precreatedConnectorTaskID := ""
 			var precreateConnectorTaskErr error
@@ -1121,6 +1140,9 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 			} else if deliveryExists {
 				detail.Server = "result delivery"
 				detail.Tool = "deliver_result"
+			} else if agentDelegateExists {
+				detail.Server = "agent group"
+				detail.Tool = "agent_delegate"
 			}
 			arguments, argumentsErr := parseToolArguments(toolCall.Arguments)
 			if argumentsErr == nil {
@@ -1212,6 +1234,34 @@ func executePreparedAdvancedChatCompletion(ctx context.Context, user *model.User
 					if err != nil {
 						detail.Status = "error"
 						toolResultText = "Delivery failed: " + err.Error()
+					} else {
+						detail.Status = "ok"
+					}
+				}
+			} else if agentDelegateExists {
+				detail.Server = "agent group"
+				detail.Tool = "agent_delegate"
+				if argumentsErr != nil {
+					detail.Status = "invalid_arguments"
+					toolResultText = "Invalid delegation arguments: " + argumentsErr.Error()
+				} else {
+					toolResultText, err = executeAdvancedChatAgentDelegate(ctx, user, advancedChatAgentDelegateInput{
+						UserID:             user.ID,
+						RunID:              prepared.runID,
+						ModelName:          prepared.modelName,
+						UserChannelID:      prepared.input.UserChannelID,
+						Messages:           executorMessages,
+						WorkspaceSkills:    prepared.workspaceSkills,
+						ConnectorDevice:    prepared.connectorDevice,
+						ConnectorWorkspace: prepared.connectorWorkspace,
+						ConnectorBindings:  connectorBindings,
+						ConnectorTools:     connectorTools,
+						Groups:             prepared.agentGroups,
+						Arguments:          arguments,
+					})
+					if err != nil {
+						detail.Status = "error"
+						toolResultText = "Delegated agent failed: " + err.Error()
 					} else {
 						detail.Status = "ok"
 					}
